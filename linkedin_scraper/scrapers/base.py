@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import random
 from typing import Optional
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
@@ -15,8 +16,13 @@ from ..core import (
     handle_modal_close,
     extract_text_safe,
     retry_async,
+    human_delay,
+    human_short_delay,
+    human_read_delay,
+    random_mouse_move,
+    human_scroll,
 )
-from ..core.exceptions import AuthenticationError, ScrapingError
+from ..core.exceptions import AuthenticationError, RateLimitError, ScrapingError
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +64,16 @@ class BaseScraper:
     
     async def scroll_page_to_bottom(self, pause_time: float = 1.0, max_scrolls: int = 10) -> None:
         """
-        Scroll to bottom of page with pauses.
-        
+        Scroll to bottom of page with human-like pauses.
+
         Args:
-            pause_time: Time to pause between scrolls
+            pause_time: Minimum time to pause between scrolls
             max_scrolls: Maximum number of scroll attempts
         """
-        await scroll_to_bottom(self.page, pause_time, max_scrolls)
+        for _ in range(max_scrolls):
+            await human_scroll(self.page, "down")
+            await human_delay(pause_time, pause_time + 2.0)
+            await random_mouse_move(self.page)
     
     async def scroll_page_to_half(self) -> None:
         """Scroll to middle of page."""
@@ -85,15 +94,18 @@ class BaseScraper:
     
     async def click_all_see_more_buttons(self, max_attempts: int = 10) -> int:
         """
-        Click all 'Show more' / 'See more' buttons.
-        
+        Click all 'Show more' / 'See more' buttons with human-like pauses.
+
         Args:
             max_attempts: Maximum number of buttons to click
-            
+
         Returns:
             Number of buttons clicked
         """
-        return await click_see_more_buttons(self.page, max_attempts)
+        clicked = await click_see_more_buttons(self.page, max_attempts)
+        if clicked > 0:
+            await human_short_delay()
+        return clicked
     
     async def close_modals(self) -> bool:
         """
@@ -153,19 +165,39 @@ class BaseScraper:
         except PlaywrightTimeoutError:
             logger.warning("Navigation did not complete within timeout")
     
-    async def navigate_and_wait(self, url: str, wait_until: str = 'domcontentloaded', timeout: int = 60000) -> None:
+    async def navigate_and_wait(
+        self, url: str, wait_until: str = 'domcontentloaded',
+        timeout: int = 60000, max_retries: int = 3,
+    ) -> None:
         """
         Navigate to URL and wait for page load.
-        
+        Automatically backs off and retries if rate-limited.
+
         Args:
             url: URL to navigate to
             wait_until: Wait condition (domcontentloaded, networkidle, load)
             timeout: Timeout in milliseconds (default: 60000 = 60s)
+            max_retries: Number of times to retry on rate limit
         """
-        logger.info(f"Navigating to: {url}")
-        # Use type: ignore to bypass strict typing
-        await self.page.goto(url, wait_until=wait_until, timeout=timeout)  # type: ignore
-        await self.check_rate_limit()
+        for attempt in range(max_retries + 1):
+            logger.info(f"Navigating to: {url}")
+            await self.page.goto(url, wait_until=wait_until, timeout=timeout)  # type: ignore
+            try:
+                await self.check_rate_limit()
+                break  # No rate limit — continue
+            except RateLimitError as e:
+                if attempt >= max_retries:
+                    raise  # Give up after all retries
+                # Back off: 60s, 120s, 240s (double each time) + random jitter
+                wait_secs = (60 * (2 ** attempt)) + random.randint(10, 30)
+                logger.warning(
+                    "Rate limited (attempt %d/%d). Waiting %ds before retry...",
+                    attempt + 1, max_retries, wait_secs
+                )
+                await asyncio.sleep(wait_secs)
+        # Human-like pause after page load + random mouse movement
+        await human_read_delay()
+        await random_mouse_move(self.page)
     
     async def extract_list_items(
         self,

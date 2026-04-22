@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from linkedin_scraper import (
     CompanyPostsScraper,
     CompanyScraper,
+    ExtractUsersFromPostsScraper,
     JobScraper,
     JobSearchScraper,
     PersonScraper,
 )
+from linkedin_scraper.core.session_rotator import SessionRotator
 
 from ..browser_pool import BrowserPool
 from ..database import async_session
@@ -74,6 +76,15 @@ async def run_scrape(
                     )
                     result_json = json.dumps([p.model_dump() for p in result])
 
+                elif scrape_type == "extract_users":
+                    scraper = ExtractUsersFromPostsScraper(page, callback)
+                    result = await scraper.scrape(
+                        params["company_url"],
+                        posts_limit=params.get("posts_limit", 10),
+                        scrape_profiles=params.get("scrape_profiles", False),
+                    )
+                    result_json = result.model_dump_json()
+
                 else:
                     raise ValueError(f"Unknown scrape type: {scrape_type}")
 
@@ -109,3 +120,66 @@ async def run_scrape(
                     await db.commit()
                 except Exception:
                     pass
+
+
+async def run_extract_users(
+    pool: BrowserPool,
+    job_id: str,
+    session_entries: list[dict],
+    params: dict,
+) -> None:
+    """Background task for extract-users with multi-session rotation."""
+    async with async_session() as db:
+        callback = WebSocketCallback(job_id, db)
+
+        try:
+            # Start all sessions and build the rotator
+            rotator = SessionRotator()
+            first_page = None
+
+            for entry in session_entries:
+                browser = await pool.get_browser(entry["id"], entry["file"])
+                rotator.add(entry["id"], browser.page)
+                if first_page is None:
+                    first_page = browser.page
+
+            scraper = ExtractUsersFromPostsScraper(
+                first_page, callback, rotator=rotator
+            )
+            result = await scraper.scrape(
+                params["company_url"],
+                posts_limit=params.get("posts_limit", 10),
+                scrape_profiles=params.get("scrape_profiles", False),
+            )
+            result_json = result.model_dump_json()
+
+            # Store result
+            db.add(ScrapeResult(
+                job_id=job_id,
+                scrape_type="extract_users",
+                result_data=result_json,
+            ))
+            await db.execute(
+                update(ScrapeJob)
+                .where(ScrapeJob.id == job_id)
+                .values(
+                    status="completed",
+                    progress_percent=100,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+            await callback.on_complete("extract_users", result)
+
+        except Exception as e:
+            logger.exception("Extract-users job %s failed", job_id)
+            await callback.on_error(e)
+            try:
+                await db.execute(
+                    update(ScrapeJob)
+                    .where(ScrapeJob.id == job_id)
+                    .values(status="failed", error_message=str(e))
+                )
+                await db.commit()
+            except Exception:
+                pass

@@ -28,6 +28,8 @@ from .scrapers import (
     JobScraper,
     JobSearchScraper,
     CompanyPostsScraper,
+    PostReactionsScraper,
+    ExtractUsersFromPostsScraper,
 )
 
 # Callbacks
@@ -52,6 +54,8 @@ from .models import (
     Employee,
     Job,
     Post,
+    PostEngagementUser,
+    ExtractUsersResult,
 )
 
 __all__ = [
@@ -70,6 +74,8 @@ __all__ = [
     "JobScraper",
     "JobSearchScraper",
     "CompanyPostsScraper",
+    "PostReactionsScraper",
+    "ExtractUsersFromPostsScraper",
     # Exceptions
     "LinkedInScraperException",
     "AuthenticationError",
@@ -96,4 +102,6 @@ __all__ = [
     "Employee",
     "Job",
     "Post",
+    "PostEngagementUser",
+    "ExtractUsersResult",
 ]

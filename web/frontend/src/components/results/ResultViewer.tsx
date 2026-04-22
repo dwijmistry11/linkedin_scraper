@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { getScrapeResult } from '../../api/scrape';
-import type { ScrapeResult, Person, Company, Job, Post } from '../../types';
+import type { ScrapeResult, Person, Company, Job, Post, ExtractUsersResult } from '../../types';
 import PersonCard from './PersonCard';
 import CompanyCard from './CompanyCard';
 import JobCard from './JobCard';
 import PostCard from './PostCard';
+import UsersTable from './UsersTable';
 
 export default function ResultViewer({ jobId }: { jobId: string }) {
   const [result, setResult] = useState<ScrapeResult | null>(null);
@@ -40,6 +41,9 @@ export default function ResultViewer({ jobId }: { jobId: string }) {
         ))}
       </div>
     );
+  }
+  if (scrape_type === 'extract_users') {
+    return <UsersTable data={result_data as unknown as ExtractUsersResult} />;
   }
   if (scrape_type === 'job_search') {
     const urls = result_data as string[];

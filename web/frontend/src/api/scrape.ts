@@ -30,6 +30,19 @@ export const scrapeCompanyPosts = (sessionId: string, companyUrl: string, limit?
     limit,
   });
 
+export const extractUsers = (
+  sessionIds: string[],
+  companyUrl: string,
+  postsLimit?: number,
+  scrapeProfiles?: boolean,
+) =>
+  api.post<ScrapeJob>('/scrape/extract-users', {
+    session_ids: sessionIds,
+    company_url: companyUrl,
+    posts_limit: postsLimit,
+    scrape_profiles: scrapeProfiles,
+  });
+
 export const getScrapeJob = (jobId: string) => api.get<ScrapeJob>(`/scrape/${jobId}`);
 
 export const getScrapeResult = (jobId: string) =>

@@ -63,6 +63,13 @@ class ScrapeCompanyPostsRequest(BaseModel):
     limit: int = 10
 
 
+class ExtractUsersRequest(BaseModel):
+    session_ids: list[str]  # one or more session IDs — rotates across them
+    company_url: str
+    posts_limit: int = 10
+    scrape_profiles: bool = False
+
+
 class ScrapeJobResponse(BaseModel):
     id: str
     session_id: str

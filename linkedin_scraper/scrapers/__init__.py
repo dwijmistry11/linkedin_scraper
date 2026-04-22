@@ -6,6 +6,8 @@ from .company import CompanyScraper
 from .job import JobScraper
 from .job_search import JobSearchScraper
 from .company_posts import CompanyPostsScraper
+from .post_reactions import PostReactionsScraper
+from .extract_users import ExtractUsersFromPostsScraper
 
 __all__ = [
     'BaseScraper',
@@ -14,4 +16,6 @@ __all__ = [
     'JobScraper',
     'JobSearchScraper',
     'CompanyPostsScraper',
+    'PostReactionsScraper',
+    'ExtractUsersFromPostsScraper',
 ]

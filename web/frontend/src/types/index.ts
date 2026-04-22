@@ -110,6 +110,21 @@ export interface Post {
   article_url: string | null;
 }
 
+// ── Extract Users types ──
+
+export interface PostEngagementUser {
+  name: string;
+  headline: string | null;
+  profile_url: string | null;
+  engagement_type: 'reaction' | 'repost';
+}
+
+export interface ExtractUsersResult {
+  company_url: string;
+  posts_scraped: number;
+  users: PostEngagementUser[];
+}
+
 // ── API types ──
 
 export interface Session {

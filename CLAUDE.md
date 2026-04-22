@@ -41,14 +41,19 @@ mypy linkedin_scraper/
    - `browser.py`: `BrowserManager` async context manager wrapping Playwright (launch, session save/load via storage state JSON, cookie management)
    - `auth.py`: `login_with_credentials`, `login_with_cookie`, `is_logged_in`, `wait_for_manual_login`. Login verification polls `is_logged_in()` which checks nav selectors + URL patterns.
    - `utils.py`: Shared page helpers — `retry_async` decorator (exponential backoff), `detect_rate_limit`, `scroll_to_bottom`, `click_see_more_buttons`, `extract_text_safe`, `handle_modal_close`
+   - `human.py`: Anti-detection helpers — randomized delays (`human_delay`, `human_between_pages`, `human_between_profiles`), `random_mouse_move`, `human_scroll` (variable-speed chunks), `human_click` (hover-then-click)
+   - `session_rotator.py`: `SessionRotator` round-robins across multiple Playwright pages, auto-cooldown on rate limit (5 min), `wait_for_any_available()` blocks if all sessions are cooling
    - `exceptions.py`: Exception hierarchy rooted at `LinkedInScraperException`
 
 2. **`scrapers/`** — One scraper per entity type, all extend `BaseScraper`
-   - `BaseScraper` (in `base.py`) takes a Playwright `Page` + optional `ProgressCallback`. Provides auth checking, rate limit detection, scrolling, safe text extraction, and retry-wrapped click.
+   - `BaseScraper` (in `base.py`) takes a Playwright `Page` + optional `ProgressCallback`. Provides auth checking, rate limit detection with auto-retry/backoff, human-like scrolling, safe text extraction, and retry-wrapped click.
    - `PersonScraper`, `CompanyScraper`, `JobScraper`, `JobSearchScraper`, `CompanyPostsScraper`
+   - `PostReactionsScraper`: opens reaction/repost modals on a post page, extracts user names, headlines, and profile URLs
+   - `ExtractUsersFromPostsScraper`: orchestrator that scrapes company posts → extracts reactors/reposters from each → optionally scrapes full profiles. Supports multi-session rotation via `SessionRotator`.
 
 3. **`models/`** — Pydantic v2 data models returned by scrapers
    - `Person` (with `Experience`, `Education`, `Contact`, `Accomplishment`, `Interest`), `Company` (with `CompanySummary`, `Employee`), `Job`, `Post`
+   - `PostEngagementUser` (name, headline, profile_url, engagement_type), `ExtractUsersResult`
 
 ### Callback system
 

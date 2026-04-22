@@ -2,6 +2,30 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 
 
+class PostEngagementUser(BaseModel):
+    """A user who reacted to or reposted a LinkedIn post."""
+    name: str
+    headline: Optional[str] = None
+    profile_url: Optional[str] = None
+    engagement_type: str  # "reaction" or "repost"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+
+class ExtractUsersResult(BaseModel):
+    """Result of extracting engaged users from a company's posts."""
+    company_url: str
+    posts_scraped: int
+    users: List["PostEngagementUser"] = Field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return self.model_dump()
+
+    def to_json(self, **kwargs) -> str:
+        return self.model_dump_json(**kwargs)
+
+
 class Post(BaseModel):
     linkedin_url: Optional[str] = None
     urn: Optional[str] = None

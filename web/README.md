@@ -70,8 +70,23 @@ Each scrape type has a dedicated page with a form, live progress bar, and inline
 | **Job** | Job URL | Title, company, location, description, benefits |
 | **Job Search** | Keywords, location, limit | List of matching job URLs |
 | **Company Posts** | Company URL, limit | Post text, reactions, comments, reposts, images |
+| **Extract Users** | Company URL, posts limit, session(s) | Users who reacted/reposted — name, headline, profile URL, engagement type |
 
 Scraping runs in the background. Progress is streamed via WebSocket in real time.
+
+### Extract Users from Posts
+
+A lead-generation workflow that chains multiple scrapers:
+
+1. Scrapes posts from a company page
+2. For each post, opens the reactions modal and extracts users who liked it
+3. Opens the reposts modal and extracts users who reshared it
+4. Deduplicates across all posts
+5. Optionally scrapes each user's full LinkedIn profile
+
+**Session rotation**: Select multiple LinkedIn sessions and the system rotates between them round-robin. When a session gets rate-limited, it's automatically placed in a 5-minute cooldown and traffic shifts to the remaining sessions. This distributes load so each account looks like a normal user with moderate activity.
+
+**Anti-detection**: All operations use randomized human-like behavior — variable delays between actions (5-18s), mouse jitter, chunked scrolling, hover-before-click, and periodic "coffee breaks" (15-45s pauses every 3 operations).
 
 ### History & Export
 
@@ -141,9 +156,10 @@ web/
 | POST | `/api/scrape/job` | Start job scrape |
 | POST | `/api/scrape/job-search` | Start job search |
 | POST | `/api/scrape/company-posts` | Start posts scrape |
+| POST | `/api/scrape/extract-users` | Extract users from posts (multi-session rotation) |
 | GET | `/api/scrape/{id}` | Get job status |
 | GET | `/api/scrape/{id}/result` | Get result data |
-| WS | `/api/ws/scrape/{id}` | Live progress stream |
+| WS | `/api/scrape/ws/{id}` | Live progress stream |
 | GET | `/api/history` | Paginated history |
 | GET | `/api/history/{id}/export?format=json\|csv` | Export result |
 | DELETE | `/api/history/{id}` | Delete history entry |
