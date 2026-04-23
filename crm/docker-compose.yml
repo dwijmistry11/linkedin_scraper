@@ -1,5 +1,16 @@
 version: "3.9"
 
+# ──────────────────────────────────────────────────────────────────────
+# Twenty CRM — Production config with AWS RDS, S3, and ElastiCache
+#
+# This compose file runs only the app containers (server + worker).
+# Database (RDS), file storage (S3), and cache (ElastiCache) are
+# external AWS services configured via environment variables.
+#
+# For local development with bundled PostgreSQL and Redis,
+# see docker-compose.local.yml
+# ──────────────────────────────────────────────────────────────────────
+
 services:
   twenty-server:
     image: twentycrm/twenty:latest
@@ -8,18 +19,20 @@ services:
       - "3000:3000"
     environment:
       - APP_SECRET=${APP_SECRET}
-      - PG_DATABASE_URL=postgres://twenty:${PG_DATABASE_PASSWORD}@twenty-db:5432/default
-      - REDIS_URL=redis://twenty-redis:6379
+      # AWS RDS PostgreSQL
+      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}
+      # AWS ElastiCache Redis (or self-hosted Redis)
+      - REDIS_URL=${REDIS_URL}
       - SERVER_URL=${SERVER_URL:-http://localhost:3000}
-      - STORAGE_TYPE=${STORAGE_TYPE:-local}
-      - STORAGE_LOCAL_PATH=.local-storage
-    volumes:
-      - server-local-data:/app/packages/twenty-server/.local-storage
+      # AWS S3 storage
+      - STORAGE_TYPE=s3
+      - STORAGE_S3_REGION=${AWS_REGION}
+      - STORAGE_S3_NAME=${S3_BUCKET_NAME}
+      - STORAGE_S3_ENDPOINT=${S3_ENDPOINT:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     depends_on:
-      twenty-db:
-        condition: service_healthy
-      twenty-redis:
-        condition: service_healthy
+      - twenty-redis-local
     restart: unless-stopped
 
   twenty-worker:
@@ -28,47 +41,30 @@ services:
     command: ["yarn", "worker:prod"]
     environment:
       - APP_SECRET=${APP_SECRET}
-      - PG_DATABASE_URL=postgres://twenty:${PG_DATABASE_PASSWORD}@twenty-db:5432/default
-      - REDIS_URL=redis://twenty-redis:6379
+      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}
+      - REDIS_URL=${REDIS_URL}
       - SERVER_URL=${SERVER_URL:-http://localhost:3000}
-      - STORAGE_TYPE=${STORAGE_TYPE:-local}
-      - STORAGE_LOCAL_PATH=.local-storage
-    volumes:
-      - server-local-data:/app/packages/twenty-server/.local-storage
+      - STORAGE_TYPE=s3
+      - STORAGE_S3_REGION=${AWS_REGION}
+      - STORAGE_S3_NAME=${S3_BUCKET_NAME}
+      - STORAGE_S3_ENDPOINT=${S3_ENDPOINT:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     depends_on:
-      twenty-db:
-        condition: service_healthy
-      twenty-redis:
-        condition: service_healthy
+      - twenty-redis-local
     restart: unless-stopped
 
-  twenty-db:
-    image: twentycrm/twenty-postgres:latest
-    container_name: twenty-db
-    environment:
-      - POSTGRES_USER=twenty
-      - POSTGRES_PASSWORD=${PG_DATABASE_PASSWORD}
-      - POSTGRES_DB=default
-    volumes:
-      - db-data:/bitnami/postgresql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U twenty -d default"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  twenty-redis:
+  # Optional local Redis — remove this service if using AWS ElastiCache
+  # and set REDIS_URL to your ElastiCache endpoint in .env
+  twenty-redis-local:
     image: redis:latest
     container_name: twenty-redis
     command: redis-server --maxmemory-policy noeviction
+    ports:
+      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 10
     restart: unless-stopped
-
-volumes:
-  db-data:
-  server-local-data:

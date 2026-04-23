@@ -1,0 +1,80 @@
+version: "3.9"
+
+# ──────────────────────────────────────────────────────────────────────
+# Twenty CRM — Local development with bundled PostgreSQL and Redis
+#
+# Usage: docker compose -f docker-compose.local.yml up -d
+# ──────────────────────────────────────────────────────────────────────
+
+services:
+  twenty-server:
+    image: twentycrm/twenty:latest
+    container_name: twenty-server
+    ports:
+      - "3000:3000"
+    environment:
+      - APP_SECRET=${APP_SECRET}
+      - PG_DATABASE_URL=postgres://twenty:${PG_DATABASE_PASSWORD}@twenty-db:5432/default
+      - REDIS_URL=redis://twenty-redis:6379
+      - SERVER_URL=${SERVER_URL:-http://localhost:3000}
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=.local-storage
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  twenty-worker:
+    image: twentycrm/twenty:latest
+    container_name: twenty-worker
+    command: ["yarn", "worker:prod"]
+    environment:
+      - APP_SECRET=${APP_SECRET}
+      - PG_DATABASE_URL=postgres://twenty:${PG_DATABASE_PASSWORD}@twenty-db:5432/default
+      - REDIS_URL=redis://twenty-redis:6379
+      - SERVER_URL=${SERVER_URL:-http://localhost:3000}
+      - STORAGE_TYPE=local
+      - STORAGE_LOCAL_PATH=.local-storage
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    depends_on:
+      twenty-db:
+        condition: service_healthy
+      twenty-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  twenty-db:
+    image: twentycrm/twenty-postgres:latest
+    container_name: twenty-db
+    environment:
+      - POSTGRES_USER=twenty
+      - POSTGRES_PASSWORD=${PG_DATABASE_PASSWORD}
+      - POSTGRES_DB=default
+    volumes:
+      - db-data:/bitnami/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U twenty -d default"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  twenty-redis:
+    image: redis:latest
+    container_name: twenty-redis
+    command: redis-server --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  server-local-data:
