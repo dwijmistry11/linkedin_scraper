@@ -3,7 +3,7 @@
 Create custom fields in Twenty CRM for the LinkedIn scraper integration.
 
 Usage:
-    python setup_fields.py --url https://your-crm.com --key YOUR_API_KEY
+    python3 setup_fields.py --url https://your-crm.com --key YOUR_API_KEY
 
 This script is idempotent — it checks for existing fields before creating.
 """
@@ -55,33 +55,32 @@ def get_headers(api_key: str) -> dict:
     }
 
 
-def get_object_metadata(base_url: str, api_key: str) -> dict:
-    """Fetch all object metadata and return a map of name -> id."""
-    url = f"{base_url.rstrip('/')}/rest/metadata/objects"
+def get_objects_with_fields(base_url: str, api_key: str) -> dict:
+    """Fetch all objects with their fields. Returns {name_singular: {id, fields: set}}."""
+    url = f"{base_url}/rest/metadata/objects"
     resp = requests.get(url, headers=get_headers(api_key))
     resp.raise_for_status()
     data = resp.json()
-    objects = data.get("data", data) if isinstance(data, dict) else data
+
+    # Structure: {"data": {"objects": [...]}, "pageInfo": {...}}
+    objects = data["data"]["objects"]
+
     result = {}
     for obj in objects:
-        name = obj.get("nameSingular", obj.get("name", ""))
-        result[name.lower()] = obj["id"]
+        name = obj.get("nameSingular", "")
+        field_names = set()
+        for f in obj.get("fields", []):
+            field_names.add(f.get("name", ""))
+        result[name.lower()] = {
+            "id": obj["id"],
+            "fields": field_names,
+        }
     return result
 
 
-def get_existing_fields(base_url: str, api_key: str, object_id: str) -> set:
-    """Get names of existing fields on an object."""
-    url = f"{base_url.rstrip('/')}/rest/metadata/fields"
-    resp = requests.get(url, headers=get_headers(api_key), params={"filter": f"objectMetadataId[eq]={object_id}"})
-    resp.raise_for_status()
-    data = resp.json()
-    fields = data.get("data", data) if isinstance(data, dict) else data
-    return {f.get("name", "") for f in fields}
-
-
 def create_field(base_url: str, api_key: str, object_id: str, field: dict) -> bool:
-    """Create a single custom field. Returns True if created, False if skipped."""
-    url = f"{base_url.rstrip('/')}/rest/metadata/fields"
+    """Create a single custom field. Returns True if created, False if failed."""
+    url = f"{base_url}/rest/metadata/fields"
     payload = {
         "name": field["name"],
         "label": field["label"],
@@ -93,21 +92,28 @@ def create_field(base_url: str, api_key: str, object_id: str, field: dict) -> bo
     if resp.status_code in (200, 201):
         return True
     else:
-        print(f"  Warning: failed to create {field['name']}: {resp.status_code} {resp.text}")
+        print(f"  Warning: failed to create {field['name']}: {resp.status_code} {resp.text[:200]}")
         return False
 
 
-def setup_object_fields(base_url: str, api_key: str, object_name: str, object_id: str, fields: list):
+def setup_object_fields(base_url: str, api_key: str, object_name: str, object_info: dict, fields: list):
     """Create custom fields on an object, skipping those that already exist."""
     print(f"\nSetting up {object_name} fields...")
-    existing = get_existing_fields(base_url, api_key, object_id)
+    existing = object_info["fields"]
+    object_id = object_info["id"]
 
+    created = 0
+    skipped = 0
     for field in fields:
         if field["name"] in existing:
             print(f"  [skip] {field['name']} already exists")
+            skipped += 1
         else:
             if create_field(base_url, api_key, object_id, field):
                 print(f"  [created] {field['name']} ({field['type']})")
+                created += 1
+
+    print(f"  Result: {created} created, {skipped} skipped")
 
 
 def main():
@@ -119,28 +125,25 @@ def main():
     base_url = args.url.rstrip("/")
     print(f"Connecting to Twenty CRM at {base_url}...")
 
-    # Get object metadata
     try:
-        objects = get_object_metadata(base_url, args.key)
+        objects = get_objects_with_fields(base_url, args.key)
     except Exception as e:
         print(f"Failed to connect: {e}")
         sys.exit(1)
 
-    print(f"Found {len(objects)} objects: {', '.join(objects.keys())}")
+    print(f"Found {len(objects)} objects: {', '.join(sorted(objects.keys()))}")
 
     # Setup People fields
-    people_id = objects.get("person")
-    if people_id:
-        setup_object_fields(base_url, args.key, "People", people_id, PEOPLE_FIELDS)
+    if "person" in objects:
+        setup_object_fields(base_url, args.key, "People", objects["person"], PEOPLE_FIELDS)
     else:
-        print("Warning: 'person' object not found in metadata")
+        print("Warning: 'person' object not found")
 
     # Setup Company fields
-    company_id = objects.get("company")
-    if company_id:
-        setup_object_fields(base_url, args.key, "Companies", company_id, COMPANY_FIELDS)
+    if "company" in objects:
+        setup_object_fields(base_url, args.key, "Companies", objects["company"], COMPANY_FIELDS)
     else:
-        print("Warning: 'company' object not found in metadata")
+        print("Warning: 'company' object not found")
 
     print("\nDone! Custom fields are ready for the LinkedIn scraper integration.")
 
