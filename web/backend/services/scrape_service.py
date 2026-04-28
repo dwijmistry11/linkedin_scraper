@@ -107,10 +107,12 @@ async def run_scrape(
 
                 await callback.on_complete(scrape_type, result)
 
+                # Auto-sync to CRM if enabled
+                await _auto_sync_to_crm(scrape_type, result_json)
+
             except Exception as e:
                 logger.exception("Scrape job %s failed", job_id)
                 await callback.on_error(e)
-                # Ensure failure is persisted even if callback DB write failed
                 try:
                     await db.execute(
                         update(ScrapeJob)
@@ -120,6 +122,23 @@ async def run_scrape(
                     await db.commit()
                 except Exception:
                     pass
+
+
+async def _auto_sync_to_crm(scrape_type: str, result_json: str) -> None:
+    """If CRM auto-sync is enabled, push the result to Twenty CRM."""
+    from ..config import settings
+    if not settings.twenty_crm_auto_sync or not settings.twenty_crm_url or not settings.twenty_crm_api_key:
+        return
+    if scrape_type not in ("person", "company", "extract_users"):
+        return
+    try:
+        from .twenty_sync import TwentyCRMClient
+        client = TwentyCRMClient(settings.twenty_crm_url, settings.twenty_crm_api_key)
+        result = await client.sync_result(scrape_type, result_json)
+        logger.info("Auto-synced %s to CRM: %s", scrape_type, result)
+        await client.close()
+    except Exception as e:
+        logger.warning("Auto-sync to CRM failed: %s", e)
 
 
 async def run_extract_users(
@@ -170,6 +189,8 @@ async def run_extract_users(
             )
             await db.commit()
             await callback.on_complete("extract_users", result)
+
+            await _auto_sync_to_crm("extract_users", result_json)
 
         except Exception as e:
             logger.exception("Extract-users job %s failed", job_id)

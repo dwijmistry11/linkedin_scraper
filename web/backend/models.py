@@ -57,6 +57,8 @@ class ScrapeResult(Base):
     job_id: Mapped[str] = mapped_column(ForeignKey("scrape_jobs.id"), unique=True, nullable=False)
     scrape_type: Mapped[str] = mapped_column(String, nullable=False)
     result_data: Mapped[str] = mapped_column(Text, nullable=False)  # JSON blob
+    synced_to_crm: Mapped[bool] = mapped_column(Boolean, default=False)
+    crm_sync_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
     job: Mapped["ScrapeJob"] = relationship(back_populates="result")

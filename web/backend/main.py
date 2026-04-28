@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .browser_pool import BrowserPool
 from .config import settings
 from .database import init_db
-from .routers import history, scrape, sessions, settings as settings_router
+from .routers import crm, history, scrape, sessions, settings as settings_router
 
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -53,6 +53,7 @@ app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
 app.include_router(scrape.router, prefix="/api/scrape", tags=["scrape"])
 app.include_router(history.router, prefix="/api/history", tags=["history"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+app.include_router(crm.router, prefix="/api", tags=["crm"])
 
 # Serve built React frontend in production.
 # Uses a custom 404 handler so API routes take full priority:

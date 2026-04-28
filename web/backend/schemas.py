@@ -123,3 +123,27 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     active_browsers: int
+
+
+# ── CRM Integration ──────────────────────────────────────────────────
+
+class CRMSettingsResponse(BaseModel):
+    url: str
+    has_api_key: bool
+    auto_sync: bool
+
+
+class UpdateCRMSettingsRequest(BaseModel):
+    url: Optional[str] = None
+    api_key: Optional[str] = None
+    auto_sync: Optional[bool] = None
+
+
+class CRMStatusResponse(BaseModel):
+    connected: bool
+    url: str
+
+
+class CRMSyncResponse(BaseModel):
+    success: bool
+    detail: Any = None
