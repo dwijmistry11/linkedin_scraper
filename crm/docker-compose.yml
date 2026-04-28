@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ──────────────────────────────────────────────────────────────────────
 # Twenty CRM — Production config with AWS RDS, S3, and ElastiCache
 #
@@ -20,7 +18,7 @@ services:
     environment:
       - APP_SECRET=${APP_SECRET}
       # AWS RDS PostgreSQL
-      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}
+      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}?sslmode=require
       # AWS ElastiCache Redis (or self-hosted Redis)
       - REDIS_URL=${REDIS_URL}
       - SERVER_URL=${SERVER_URL:-http://localhost:3000}
@@ -31,6 +29,7 @@ services:
       - STORAGE_S3_ENDPOINT=${S3_ENDPOINT:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     depends_on:
       - twenty-redis-local
     restart: unless-stopped
@@ -41,7 +40,7 @@ services:
     command: ["yarn", "worker:prod"]
     environment:
       - APP_SECRET=${APP_SECRET}
-      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}
+      - PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT:-5432}/${RDS_DATABASE:-twenty}?sslmode=require
       - REDIS_URL=${REDIS_URL}
       - SERVER_URL=${SERVER_URL:-http://localhost:3000}
       - STORAGE_TYPE=s3
@@ -50,6 +49,7 @@ services:
       - STORAGE_S3_ENDPOINT=${S3_ENDPOINT:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
     depends_on:
       - twenty-redis-local
     restart: unless-stopped

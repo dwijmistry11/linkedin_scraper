@@ -1,460 +1,489 @@
-# Twenty CRM — Self-Hosted Setup & LinkedIn Scraper Integration
+# Twenty CRM — Production Setup on AWS EC2
 
-This guide covers setting up Twenty CRM via Docker Compose with AWS services (RDS, S3, ElastiCache) and integrating it with the LinkedIn scraper.
-
-## Prerequisites
-
-- Docker and Docker Compose installed
-- Minimum 2GB RAM on the host
-- A domain with SSL (required for clipboard/browser features)
-- **AWS account** with access to RDS, S3, and optionally ElastiCache
+Complete guide for deploying Twenty CRM on a fresh Ubuntu EC2 instance with AWS RDS (PostgreSQL), S3 (file storage), local Redis, Nginx + SSL, and email via Microsoft Outlook.
 
 ---
 
-## Deployment Options
+## Architecture
 
-### Option A: Production (AWS RDS + S3)
-
-Uses AWS RDS for PostgreSQL, S3 for file storage. Only runs the app containers locally.
-
-```bash
-cd crm
-cp .env.example .env
-# Edit .env — fill in AWS credentials and secrets
-
-docker compose up -d
 ```
-
-### Option B: Local Development
-
-Bundles PostgreSQL and Redis in Docker. No AWS required.
-
-```bash
-cd crm
-cp .env.example .env
-# Edit .env — set APP_SECRET and PG_DATABASE_PASSWORD
-
-docker compose -f docker-compose.local.yml up -d
+    Internet
+       |
+       v
+ +-- Nginx (443/SSL) -----+
+ |   crm.3dsurgical.com   |
+ +--------+---------------+
+          |
+          v :3000
+ +-- EC2 (Ubuntu) --------+
+ |                        |
+ |  twenty-server         |-----> AWS RDS (PostgreSQL 16)
+ |  twenty-worker         |-----> AWS S3 (file storage)
+ |  twenty-redis (local)  |
+ |                        |
+ +------------------------+
 ```
-
-Twenty CRM will be available at `http://localhost:3000` (or your `SERVER_URL`).
-
-### First-time setup
-
-1. Open the Twenty CRM URL in your browser
-2. Create an admin account
-3. Go to **Settings -> API & Webhooks -> Create Key**
-4. Copy the API key — you'll need it for the scraper integration
 
 ---
 
-## AWS Infrastructure Setup
+## Step 1: Provision AWS Resources
 
-### 1. RDS (PostgreSQL)
+### 1a. EC2 Instance
 
-Create an RDS PostgreSQL 16 instance for Twenty CRM's database.
+- **AMI**: Ubuntu 22.04 or 24.04
+- **Instance type**: `t3.medium` (4GB RAM) minimum — Twenty migrations need 2GB+
+- **Storage**: 20GB gp3
+- **Security group** inbound rules:
 
-**AWS Console:**
-1. Go to **RDS -> Create database**
-2. Choose **PostgreSQL 16**
-3. Settings:
-   - DB instance identifier: `twenty-crm`
-   - Master username: `twenty`
-   - Master password: (strong password, avoid `@#!` characters)
-4. Instance: `db.t3.micro` (dev) or `db.t3.medium` (prod)
-5. Storage: 20GB gp3 (auto-scaling enabled)
-6. Connectivity:
-   - VPC: same as your EC2/ECS host
-   - Public access: No (access via VPC only)
-   - Security group: allow port 5432 from your app server
-7. Database name: `twenty`
-8. Click **Create database**
+| Port | Source | Purpose |
+|------|--------|---------|
+| 22 | Your IP | SSH |
+| 80 | 0.0.0.0/0 | HTTP (redirects to HTTPS) |
+| 443 | 0.0.0.0/0 | HTTPS |
 
-**Or via AWS CLI:**
-```bash
-aws rds create-db-instance \
-  --db-instance-identifier twenty-crm \
-  --db-instance-class db.t3.micro \
-  --engine postgres \
-  --engine-version 16 \
-  --master-username twenty \
-  --master-user-password YOUR_PASSWORD \
-  --allocated-storage 20 \
-  --storage-type gp3 \
-  --db-name twenty \
-  --vpc-security-group-ids sg-xxxxxxxxx \
-  --no-publicly-accessible
+### 1b. RDS (PostgreSQL)
+
+1. **RDS -> Create database -> PostgreSQL 16**
+2. Instance: `db.t3.micro` (dev) or `db.t3.medium` (prod)
+3. Master username: `postgres`
+4. Password: strong, **avoid special characters** (`@`, `#`, `!`) — they break connection strings
+5. Database name: `postgres`
+6. VPC: same as EC2
+7. Public access: **No**
+8. Security group: allow **port 5432** from EC2's security group
+
+Note the endpoint after creation (e.g. `your-instance.xxxx.ap-south-1.rds.amazonaws.com`).
+
+### 1c. S3 Bucket
+
+1. **S3 -> Create bucket**
+2. Region: same as EC2
+3. Block all public access: **Yes**
+4. Create an **IAM user** with S3 access:
+   - IAM -> Users -> Create user (e.g. `twenty-crm-s3`)
+   - Attach inline policy:
+     ```json
+     {
+       "Version": "2012-10-17",
+       "Statement": [{
+         "Effect": "Allow",
+         "Action": "s3:*",
+         "Resource": [
+           "arn:aws:s3:::YOUR-BUCKET-NAME",
+           "arn:aws:s3:::YOUR-BUCKET-NAME/*"
+         ]
+       }]
+     }
+     ```
+   - Create **Access Key** -> save both keys
+
+### 1d. DNS
+
+Add an A record pointing your domain to the EC2 public IP:
+
+```
+crm.yourdomain.com  ->  <EC2 public IP>
 ```
 
-After creation, note the **endpoint** (e.g. `twenty-crm.xxxx.us-east-1.rds.amazonaws.com`).
+---
 
-### 2. S3 (File Storage)
+## Step 2: EC2 Server Setup
 
-Create an S3 bucket for Twenty CRM's uploaded files, attachments, and images.
+SSH into your EC2 instance and run:
 
-**AWS Console:**
-1. Go to **S3 -> Create bucket**
-2. Bucket name: `your-twenty-crm-files` (globally unique)
-3. Region: same as your app server
-4. Block all public access: **Yes** (Twenty accesses via IAM keys)
-5. Versioning: optional (recommended for data safety)
-6. Click **Create bucket**
+### 2a. System update + swap
 
-**Bucket policy** (optional, for tighter access):
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "AWS": "arn:aws:iam::YOUR_ACCOUNT_ID:user/twenty-crm-user"
-      },
-      "Action": [
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject",
-        "s3:ListBucket"
-      ],
-      "Resource": [
-        "arn:aws:s3:::your-twenty-crm-files",
-        "arn:aws:s3:::your-twenty-crm-files/*"
-      ]
+```bash
+sudo apt update && sudo apt upgrade -y
+
+# Add swap (needed for Twenty migrations)
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+### 2b. Install Docker
+
+```bash
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker
+```
+
+Verify: `docker --version && docker compose version`
+
+### 2c. Install Nginx + Certbot
+
+```bash
+sudo apt install -y nginx certbot python3-certbot-nginx
+```
+
+### 2d. Configure Nginx reverse proxy
+
+```bash
+sudo nano /etc/nginx/sites-available/twenty-crm
+```
+
+Paste:
+
+```nginx
+server {
+    listen 80;
+    server_name crm.yourdomain.com;
+
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        client_max_body_size 50M;
     }
-  ]
 }
 ```
 
-**IAM User for S3 access:**
-1. Go to **IAM -> Users -> Create user**
-2. Name: `twenty-crm-s3`
-3. Attach policy: `AmazonS3FullAccess` (or the custom policy above)
-4. Create **Access Key** (programmatic access)
-5. Save the `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-
-**Or via AWS CLI:**
-```bash
-aws s3 mb s3://your-twenty-crm-files --region us-east-1
-
-aws iam create-user --user-name twenty-crm-s3
-aws iam attach-user-policy --user-name twenty-crm-s3 \
-  --policy-arn arn:aws:iam::aws:policy/AmazonS3FullAccess
-aws iam create-access-key --user-name twenty-crm-s3
-```
-
-### 3. ElastiCache Redis (Optional)
-
-For production, use ElastiCache instead of the bundled Redis container.
-
-**AWS Console:**
-1. Go to **ElastiCache -> Create cluster**
-2. Choose **Redis OSS**
-3. Settings:
-   - Name: `twenty-crm-redis`
-   - Node type: `cache.t3.micro` (dev) or `cache.t3.medium` (prod)
-   - Number of replicas: 0 (dev) or 1 (prod)
-4. Subnet group: same VPC as your app server
-5. Security group: allow port 6379 from your app server
-6. Click **Create**
-
-After creation, note the **primary endpoint** (e.g. `twenty-crm-redis.xxxx.cache.amazonaws.com:6379`).
-
-**Or via AWS CLI:**
-```bash
-aws elasticache create-cache-cluster \
-  --cache-cluster-id twenty-crm-redis \
-  --engine redis \
-  --cache-node-type cache.t3.micro \
-  --num-cache-nodes 1 \
-  --security-group-ids sg-xxxxxxxxx
-```
-
-If you skip ElastiCache, the bundled `twenty-redis-local` container in `docker-compose.yml` serves as Redis.
-
----
-
-## Environment Variables
-
-### Production (.env)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `APP_SECRET` | Yes | Security token — `openssl rand -base64 32` |
-| `SERVER_URL` | Yes | External URL, e.g. `https://crm.yourdomain.com` |
-| **AWS RDS** | | |
-| `RDS_HOST` | Yes | RDS endpoint hostname |
-| `RDS_PORT` | No | Default: `5432` |
-| `RDS_DATABASE` | No | Default: `twenty` |
-| `RDS_USERNAME` | Yes | RDS master username |
-| `RDS_PASSWORD` | Yes | RDS master password |
-| **AWS S3** | | |
-| `AWS_REGION` | Yes | e.g. `us-east-1` |
-| `S3_BUCKET_NAME` | Yes | S3 bucket name |
-| `AWS_ACCESS_KEY_ID` | Yes | IAM access key |
-| `AWS_SECRET_ACCESS_KEY` | Yes | IAM secret key |
-| `S3_ENDPOINT` | No | Only for S3-compatible (MinIO, DO Spaces) |
-| **Redis** | | |
-| `REDIS_URL` | Yes | ElastiCache or local Redis URL |
-
-### Local Development (.env)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `APP_SECRET` | Yes | Security token |
-| `PG_DATABASE_PASSWORD` | Yes | Local PostgreSQL password |
-| `SERVER_URL` | No | Default: `http://localhost:3000` |
-
----
-
-## Docker Compose Services
-
-### Production (`docker-compose.yml`)
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| `twenty-server` | 3000 | Main application (connects to RDS + S3) |
-| `twenty-worker` | — | Background job processor |
-| `twenty-redis-local` | 6379 | Local Redis fallback (remove if using ElastiCache) |
-
-No database container — uses AWS RDS externally.
-
-### Local (`docker-compose.local.yml`)
-
-| Service | Port | Purpose |
-|---------|------|---------|
-| `twenty-server` | 3000 | Main application |
-| `twenty-worker` | — | Background job processor |
-| `twenty-db` | 5432 (internal) | Bundled PostgreSQL 16 |
-| `twenty-redis` | 6379 (internal) | Bundled Redis |
-
----
-
-## Architecture Diagram
-
-```
-                    ┌─────────────────────┐
-                    │   Your Server (EC2)  │
-                    │                     │
-                    │  ┌───────────────┐  │
-                    │  │ twenty-server  │──┼──────┐
-                    │  │   :3000       │  │      │
-                    │  └───────────────┘  │      │
-                    │  ┌───────────────┐  │      │
-                    │  │ twenty-worker  │──┼──┐   │
-                    │  └───────────────┘  │  │   │
-                    └─────────────────────┘  │   │
-                                            │   │
-                 ┌──────────────────────────┘   │
-                 │                              │
-     ┌───────────▼───────────┐    ┌─────────────▼──────────┐
-     │      AWS RDS          │    │       AWS S3            │
-     │   PostgreSQL 16       │    │   File Storage          │
-     │                       │    │                        │
-     │ twenty-crm.xxxx.     │    │ your-twenty-crm-files  │
-     │  rds.amazonaws.com    │    │                        │
-     └───────────────────────┘    └────────────────────────┘
-
-     ┌───────────────────────┐
-     │   AWS ElastiCache     │  (optional — can use local Redis)
-     │      Redis            │
-     │                       │
-     │ twenty-crm-redis.     │
-     │  cache.amazonaws.com  │
-     └───────────────────────┘
-```
-
----
-
-## Security Best Practices
-
-### RDS
-- Keep RDS in a private subnet (no public access)
-- Use security groups to allow only your app server's IP/VPC
-- Enable encryption at rest
-- Enable automated backups (7-day retention minimum)
-
-### S3
-- Block all public access
-- Use a dedicated IAM user with minimal permissions (only the bucket)
-- Enable server-side encryption (SSE-S3 or SSE-KMS)
-- Enable versioning for data recovery
-
-### ElastiCache
-- Keep in a private subnet
-- Use security groups to restrict access to app server only
-- Enable encryption in transit (TLS)
-
-### Application
-- Use HTTPS with a valid SSL certificate (Let's Encrypt via nginx/caddy)
-- Store `.env` securely — never commit it to git
-- Rotate `APP_SECRET` and API keys periodically
-
----
-
-## Data Model Mapping
-
-### LinkedIn Person -> Twenty People
-
-| LinkedIn Scraper Field | Twenty CRM Field | Type | Notes |
-|---|---|---|---|
-| `name` (split on first space) | `name.firstName` / `name.lastName` | Name | Standard field |
-| `contacts[type=email].value` | `emails.primaryEmail` | Email | First email contact |
-| `contacts[type=phone].value` | `phones.primaryPhoneNumber` | Phone | First phone contact |
-| `experiences[0].position_title` | `jobTitle` | Text | Current role headline |
-| `location` | `city` | Text | Parse city from location |
-| `linkedin_url` | `linkedinUrl` | Links | **Custom field** |
-| `about` | `intro` | Rich Text | **Custom field** |
-| `open_to_work` | `openToWork` | Boolean | **Custom field** |
-| `experiences` | `experiencesJson` | JSON | **Custom field** |
-| `educations` | `educationsJson` | JSON | **Custom field** |
-
-### LinkedIn Company -> Twenty Companies
-
-| LinkedIn Scraper Field | Twenty CRM Field | Type | Notes |
-|---|---|---|---|
-| `name` | `name` | Text | Standard field |
-| `website` | `domainName` | Links | Standard field |
-| `linkedin_url` | `linkedinUrl` | Links | **Custom field** |
-| `industry` | `industry` | Text | **Custom field** |
-| `company_size` | `employeeCount` | Number | **Custom field** |
-| `headquarters` | `address` | Address | **Custom field** |
-| `founded` | `founded` | Text | **Custom field** |
-| `about_us` | `aboutUs` | Rich Text | **Custom field** |
-| `specialties` | `specialties` | Text | **Custom field** |
-
-### PostEngagementUser -> Twenty People + Notes
-
-| LinkedIn Scraper Field | Twenty CRM Field | Notes |
-|---|---|---|
-| `name` (split) | `name.firstName` / `name.lastName` | |
-| `headline` | `jobTitle` | |
-| `profile_url` | `linkedinUrl` (custom) | |
-| `engagement_type` | — | Added as a **Note**: "Reacted to {company} post" |
-
----
-
-## Custom Fields Setup
-
-Run the setup script after Twenty CRM is running:
+Enable it:
 
 ```bash
-python crm/setup_fields.py --url https://your-crm.com --key YOUR_API_KEY
+sudo ln -s /etc/nginx/sites-available/twenty-crm /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl restart nginx
 ```
 
-This creates all required custom fields on People and Companies objects. The script is idempotent.
+### 2e. SSL certificate
 
-See the script source for the full field list, or create them manually in **Settings -> Data Model**.
+```bash
+sudo certbot --nginx -d crm.yourdomain.com
+```
+
+Follow prompts. Verify auto-renewal: `sudo certbot renew --dry-run`
 
 ---
 
-## API Integration
+## Step 3: Deploy Twenty CRM
 
-### Authentication
-
-```
-Authorization: Bearer YOUR_API_KEY
-Content-Type: application/json
-```
-
-### Base URL
-
-- Self-hosted: `https://your-crm-domain.com/rest/`
-- Rate limit: 100 requests/minute, 60 records/batch
-
-### Create a Person
+### 3a. Get the files
 
 ```bash
-curl -X POST https://your-crm.com/rest/people \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": { "firstName": "Satya", "lastName": "Nadella" },
-    "jobTitle": "CEO at Microsoft",
-    "emails": { "primaryEmail": "satya@microsoft.com" },
-    "city": "Redmond"
-  }'
+cd ~
+git clone <your-repo-url>
+cd linkedin_scraper/crm
 ```
 
-### Create a Company
+Or just create the files manually — you need `docker-compose.yml` and `.env`.
+
+### 3b. Configure `.env`
 
 ```bash
-curl -X POST https://your-crm.com/rest/companies \
-  -H "Authorization: Bearer $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Microsoft",
-    "domainName": "microsoft.com"
-  }'
+cp .env.example .env
+nano .env
 ```
 
-### Link Person to Company
+Fill in all values:
 
-```bash
-curl -X PATCH https://your-crm.com/rest/people/<person-id> \
-  -H "Authorization: Bearer $API_KEY" \
-  -d '{ "company": { "connect": "<company-id>" } }'
+```env
+# Core
+APP_SECRET=<generate with: openssl rand -base64 32>
+SERVER_URL=https://crm.yourdomain.com
+
+# AWS RDS
+RDS_HOST=your-instance.xxxx.ap-south-1.rds.amazonaws.com
+RDS_PORT=5432
+RDS_DATABASE=postgres
+RDS_USERNAME=postgres
+RDS_PASSWORD=your-rds-password
+
+# AWS S3
+AWS_REGION=ap-south-1
+S3_BUCKET_NAME=your-bucket-name
+AWS_ACCESS_KEY_ID=AKIA...
+AWS_SECRET_ACCESS_KEY=...
+
+# Redis (local container)
+REDIS_URL=redis://twenty-redis-local:6379
+
+# Email (Microsoft Outlook)
+EMAIL_DRIVER=smtp
+EMAIL_SMTP_HOST=smtp.office365.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USER=your@company.com
+EMAIL_SMTP_PASSWORD=your-app-password
+
+# Security (add AFTER creating your admin account)
+# IS_MULTIWORKSPACE_ENABLED=false
+# IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS=true
+# LOGIC_FUNCTION_TYPE=DISABLED
+# CODE_INTERPRETER_TYPE=DISABLED
 ```
 
-### Search for Existing Person (dedup)
+### 3c. Start Twenty CRM
 
 ```bash
-curl "https://your-crm.com/rest/people?filter=linkedinUrl[eq]=https://linkedin.com/in/satyanadella/" \
-  -H "Authorization: Bearer $API_KEY"
+docker compose up -d
+docker compose logs -f twenty-server
+```
+
+First startup takes 3-10 minutes (database migrations). Wait until you see:
+
+```
+[NestApplication] Nest application successfully started
+```
+
+### 3d. Create admin account
+
+1. Open `https://crm.yourdomain.com`
+2. Sign up with your email and password
+3. Complete the onboarding wizard
+
+### 3e. Lock down signups
+
+After your admin account is created, uncomment the security lines in `.env`:
+
+```env
+IS_MULTIWORKSPACE_ENABLED=false
+IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS=true
+LOGIC_FUNCTION_TYPE=DISABLED
+CODE_INTERPRETER_TYPE=DISABLED
+```
+
+Restart:
+
+```bash
+docker compose down
+docker compose up -d
+```
+
+### 3f. Enable 2FA
+
+1. Log into Twenty CRM
+2. Go to **Settings -> Accounts -> Security**
+3. Enable **Two-Factor Authentication**
+4. Scan QR code with your authenticator app
+
+### 3g. Generate API key (for scraper integration)
+
+1. Go to **Settings -> API & Webhooks**
+2. Click **Create Key**
+3. Save the key
+
+### 3h. Create custom fields
+
+From your local machine:
+
+```bash
+python crm/setup_fields.py --url https://crm.yourdomain.com --key YOUR_API_KEY
 ```
 
 ---
 
-## Sync Flow
+## Docker Compose — Key Modifications
 
+The `docker-compose.yml` differs from Twenty's default in these ways:
+
+### 1. External RDS instead of local PostgreSQL
+
+**Default Twenty**: bundles a `twentycrm/twenty-postgres` container.
+
+**Our config**: no database container. Connects to AWS RDS via:
+```yaml
+PG_DATABASE_URL=postgres://${RDS_USERNAME}:${RDS_PASSWORD}@${RDS_HOST}:${RDS_PORT}/${RDS_DATABASE}?sslmode=require
 ```
-Scrape completes
-  |
-  v
-Map LinkedIn model -> Twenty fields
-  |
-  v
-Search Twenty for existing record (by linkedinUrl)
-  |
-  v
-Found? -> PATCH (update)    Not found? -> POST (create)
-  |
-  v
-If Person has company -> Find/create Company -> Link
-  |
-  v
-If PostEngagementUser -> Create Person + add Note
-  |
-  v
-Mark scrape_result as synced
+
+### 2. `NODE_TLS_REJECT_UNAUTHORIZED=0`
+
+Required because AWS RDS uses Amazon's root CA certificate, which Node.js doesn't trust by default. This tells Node to accept the RDS SSL certificate. Safe within the same VPC.
+
+### 3. S3 storage instead of local filesystem
+
+**Default Twenty**: stores files on local disk.
+
+**Our config**: uses AWS S3:
+```yaml
+STORAGE_TYPE=s3
+STORAGE_S3_REGION=${AWS_REGION}
+STORAGE_S3_NAME=${S3_BUCKET_NAME}
+```
+
+### 4. Local Redis instead of ElastiCache
+
+**Why not ElastiCache Serverless**: ElastiCache Serverless uses Redis Cluster mode, which causes `CROSSSLOT` errors with Twenty CRM. Twenty expects standalone (non-clustered) Redis.
+
+**Our config**: runs a simple Redis container alongside the app:
+```yaml
+twenty-redis-local:
+  image: redis:latest
+  command: redis-server --maxmemory-policy noeviction
+```
+
+If you want managed Redis, use a **non-serverless** ElastiCache node (`cache.t3.micro`) with cluster mode **disabled**.
+
+### 5. Removed `version: "3.9"`
+
+Docker Compose V2 treats the `version` key as obsolete. It still works but shows a warning. Can be safely removed.
+
+---
+
+## Email Configuration
+
+### Microsoft Outlook / Office 365
+
+```env
+EMAIL_DRIVER=smtp
+EMAIL_SMTP_HOST=smtp.office365.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USER=your@company.com
+EMAIL_SMTP_PASSWORD=your-password-or-app-password
+```
+
+If your org has MFA, you need an **app password**:
+1. Go to https://mysignins.microsoft.com/security-info
+2. Add sign-in method -> App password
+3. Use the generated password
+
+### Microsoft SSO + Email/Calendar Sync (optional)
+
+For full Microsoft integration (SSO login + Outlook sync + Calendar sync):
+
+1. Go to **Azure Portal -> Microsoft Entra ID -> App Registrations -> New registration**
+2. Name: `Twenty CRM`
+3. Redirect URIs (Web):
+   - `https://crm.yourdomain.com/auth/microsoft/redirect`
+   - `https://crm.yourdomain.com/auth/microsoft-apis/get-access-token`
+4. Certificates & secrets -> New client secret -> copy value
+5. Copy Application (client) ID from overview
+
+Add to `.env`:
+
+```env
+AUTH_MICROSOFT_ENABLED=true
+AUTH_MICROSOFT_CLIENT_ID=<application-id>
+AUTH_MICROSOFT_CLIENT_SECRET=<client-secret>
+AUTH_MICROSOFT_CALLBACK_URL=https://crm.yourdomain.com/auth/microsoft/redirect
+AUTH_MICROSOFT_APIS_CALLBACK_URL=https://crm.yourdomain.com/auth/microsoft-apis/get-access-token
+MESSAGING_PROVIDER_MICROSOFT_ENABLED=true
+CALENDAR_PROVIDER_MICROSOFT_ENABLED=true
+```
+
+### Gmail (alternative)
+
+```env
+EMAIL_DRIVER=smtp
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USER=your@gmail.com
+EMAIL_SMTP_PASSWORD=<app-password>
 ```
 
 ---
 
-## Relationships in Twenty
+## Security Checklist
 
-```
-+----------------+       +-----------------+
-|    People      |------>|   Companies     |
-|                | works |                 |
-| firstName      |  at   | name            |
-| lastName       |       | domainName      |
-| jobTitle       |       | linkedinUrl*    |
-| linkedinUrl*   |       | industry*       |
-| intro*         |       | aboutUs*        |
-| openToWork*    |       | founded*        |
-+-------+--------+       +-----------------+
-        |
-        | has
-        v
-+----------------+
-|    Notes       |
-|                |
-| body           |  "Reacted to {company} post"
-| personId       |
-+----------------+
+| Setting | How | Status |
+|---------|-----|--------|
+| HTTPS / SSL | Certbot + Nginx | Required |
+| Admin account created | Sign up on first visit | Do first |
+| Signups disabled | `IS_WORKSPACE_CREATION_LIMITED_TO_SERVER_ADMINS=true` | After admin signup |
+| 2FA enabled | Settings -> Accounts -> Security | Recommended |
+| Code execution disabled | `LOGIC_FUNCTION_TYPE=DISABLED` | Recommended |
+| S3 private | Block all public access on bucket | Required |
+| RDS private | No public access, VPC-only | Required |
+| SSH restricted | Security group: port 22 from your IP only | Required |
+| App secret set | `APP_SECRET` via `openssl rand -base64 32` | Required |
+| .env not in git | `.gitignore` or manual deploy | Required |
 
-* = custom field
+---
+
+## Common Operations
+
+```bash
+# View logs
+docker compose logs -f twenty-server
+docker compose logs -f twenty-worker
+
+# Search for errors
+docker compose logs twenty-server 2>&1 | grep -i error
+
+# Recent errors only
+docker compose logs --since 5m twenty-server 2>&1 | grep -i error
+
+# Restart
+docker compose restart
+
+# Full restart (recreate containers)
+docker compose down
+docker compose up -d
+
+# Update to latest Twenty version
+docker compose pull
+docker compose down
+docker compose up -d
+
+# Check container status
+docker compose ps
+
+# Check resource usage
+docker stats
+
+# Check disk/memory
+df -h
+free -h
 ```
+
+---
+
+## Troubleshooting
+
+### `no pg_hba.conf entry ... no encryption`
+RDS requires SSL. Ensure `?sslmode=require` is in the `PG_DATABASE_URL`.
+
+### `self-signed certificate in certificate chain`
+Add `NODE_TLS_REJECT_UNAUTHORIZED=0` to both server and worker environment sections.
+
+### `CROSSSLOT Keys in request don't hash to the same slot`
+You're using Redis Cluster (ElastiCache Serverless). Switch to local Redis or a non-clustered ElastiCache node.
+
+### Migrations stuck / server silent for 10+ minutes
+- Check RAM: `free -h` — need 2GB+ free
+- Add swap if needed: `sudo fallocate -l 2G /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile`
+- Check if process is alive: `docker exec twenty-server ps aux`
+- Check DB connection: `docker exec twenty-server netstat -an | grep 5432`
+
+### `relation "core.keyValuePair" does not exist`
+Migrations didn't complete (likely interrupted). Reset the database:
+```bash
+PGPASSWORD='your-password' psql -h your-rds-host -U postgres -d postgres -c "
+DROP SCHEMA IF EXISTS core CASCADE;
+DROP SCHEMA IF EXISTS public CASCADE;
+CREATE SCHEMA public;
+GRANT ALL ON SCHEMA public TO postgres;
+"
+docker compose down
+docker compose up -d
+```
+
+### S3 `AccessDenied`
+IAM user missing permissions. Add an inline policy with `s3:*` on your bucket (see Step 1c).
+
+### `bash: !...: event not found`
+Bash interprets `!` in passwords. Use `PGPASSWORD='...'` as a separate env var instead of embedding in the URL.
+
+### Server keeps restarting
+Check `docker compose logs --tail 50 twenty-server` for the actual error. Common causes:
+- RDS not reachable (security group)
+- Redis not reachable (wrong URL)
+- S3 permissions denied (IAM policy)
+- Out of memory (need swap or bigger instance)
 
 ---
 
@@ -462,41 +491,47 @@ Mark scrape_result as synced
 
 ```
 crm/
-+-- docker-compose.yml       # Production: AWS RDS + S3 (no local DB)
++-- docker-compose.yml       # Production: RDS + S3 + local Redis
 +-- docker-compose.local.yml # Development: bundled PostgreSQL + Redis
-+-- .env.example             # Environment template with all variables
++-- .env.example             # Environment template (no real credentials)
 +-- setup_fields.py          # Create custom fields via Twenty API
 +-- README.md                # This file
 ```
 
 ---
 
-## Troubleshooting
+## LinkedIn Scraper Integration
 
-### Cannot connect to RDS
-- Verify security group allows inbound 5432 from your app server
-- Check RDS is in the same VPC or has VPC peering
-- Test: `psql -h your-rds-endpoint -U twenty -d twenty`
+See the data model mapping and sync flow documentation in the sections below.
 
-### S3 permission denied
-- Verify IAM user has `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on the bucket
-- Check `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in `.env`
-- Test: `aws s3 ls s3://your-bucket --profile twenty-crm`
+### Data Model: LinkedIn -> Twenty CRM
 
-### Twenty CRM won't start
-- Check logs: `docker compose logs twenty-server`
-- Ensure `APP_SECRET` is set
-- Verify database URL is correct: `PG_DATABASE_URL` should resolve
+| LinkedIn | Twenty Object | Twenty Field | Notes |
+|----------|--------------|--------------|-------|
+| Person.name | People | name.firstName / lastName | Split on first space |
+| Person.linkedin_url | People | linkedinUrl* | Custom field, used for dedup |
+| Person.location | People | city | |
+| Person.about | People | intro* | Custom field |
+| Person.experiences[0].position_title | People | jobTitle | |
+| Person.contacts[email] | People | emails.primaryEmail | |
+| Company.name | Companies | name | |
+| Company.website | Companies | domainName | |
+| Company.linkedin_url | Companies | linkedinUrl* | Custom field |
+| Company.industry | Companies | industry* | Custom field |
+| PostEngagementUser.name | People | name.firstName / lastName | |
+| PostEngagementUser.headline | People | jobTitle | |
+| PostEngagementUser.engagement_type | Notes | body | "Reacted to {company} post" |
 
-### API returns 401
-- API key may have expired — regenerate in Settings -> API & Webhooks
-- Verify `Authorization: Bearer` header
+*Custom fields — created by `setup_fields.py`.
 
-### ElastiCache connection refused
-- Security group must allow 6379 from app server
-- `REDIS_URL` format: `redis://endpoint:6379` (no password by default)
-- If using auth token: `redis://:authtoken@endpoint:6379`
+### Sync Flow
 
-### SSL/HTTPS
-- Use nginx or caddy as reverse proxy with Let's Encrypt
-- Twenty requires HTTPS for clipboard and some browser features
+```
+Scrape completes
+  -> Map to Twenty fields
+  -> Search by linkedinUrl (dedup)
+  -> Found? PATCH : POST
+  -> Link Person to Company
+  -> Add engagement Note if applicable
+  -> Mark as synced
+```
