@@ -8,6 +8,8 @@ export const addCompany = (linkedinUrl: string, name?: string) =>
 
 export const getCompany = (id: string) => api.get(`/companies/${id}`);
 
+export const deleteCompany = (id: string) => api.delete(`/companies/${id}`);
+
 export const getCompanyPosts = (id: string) => api.get(`/companies/${id}/posts`);
 
 export const getCompanyUsers = (id: string) => api.get(`/companies/${id}/users`);

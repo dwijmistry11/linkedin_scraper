@@ -40,8 +40,12 @@ export default function HistoryPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('Delete this scrape result?')) return;
-    await deleteHistory(id);
-    load();
+    try {
+      await deleteHistory(id);
+      load();
+    } catch (e: any) {
+      alert(e.response?.data?.detail || 'Failed to delete');
+    }
   };
 
   const totalPages = Math.ceil(total / perPage);

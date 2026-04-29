@@ -17,6 +17,22 @@ from ..database import get_db, async_session
 router = APIRouter()
 
 
+def _clean_linkedin_url(url: str) -> str:
+    """Strip /posts/, query params, and trailing slashes from LinkedIn URLs."""
+    url = url.split("?")[0].rstrip("/")
+    if "/posts" in url:
+        url = url.split("/posts")[0]
+    return url
+
+
+def _extract_linkedin_url(company: dict) -> str:
+    """Extract the LinkedIn URL string from a Twenty company record."""
+    lu = company.get("linkedinUrl")
+    if isinstance(lu, dict):
+        return lu.get("primaryLinkUrl", "")
+    return lu or ""
+
+
 def _get_crud() -> TwentyCRUD:
     if not settings.twenty_crm_url or not settings.twenty_crm_api_key:
         raise HTTPException(status_code=400, detail="CRM not configured")
@@ -56,15 +72,20 @@ async def add_company(body: AddCompanyRequest):
     """Add a company to monitor — creates in CRM if not exists."""
     crud = _get_crud()
     try:
+        clean_url = _clean_linkedin_url(body.linkedin_url)
+
         # Check if already exists
-        existing = await crud.find_company_by_linkedin_url(body.linkedin_url)
+        existing = await crud.find_company_by_linkedin_url(clean_url)
         if existing:
             return {"company": existing, "action": "existing"}
 
-        # Create new company in CRM
+        # Derive name from URL if not provided
+        url_parts = clean_url.rstrip("/").split("/")
+        auto_name = url_parts[-1].replace("-", " ").title() if url_parts else "Company"
+
         data = {
-            "name": body.name or body.linkedin_url.split("/")[-2].replace("-", " ").title(),
-            "linkedinUrl": {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": body.linkedin_url},
+            "name": body.name or auto_name,
+            "linkedinUrl": {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": clean_url},
         }
         crm_id = await crud.create_company(data)
         if not crm_id:
@@ -89,6 +110,19 @@ async def get_company(company_id: str):
         await crud.close()
 
 
+@router.delete("/companies/{company_id}", status_code=200)
+async def delete_company(company_id: str):
+    """Delete a company from CRM."""
+    crud = _get_crud()
+    try:
+        success = await crud.delete_company(company_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Company not found")
+        return {"deleted": True}
+    finally:
+        await crud.close()
+
+
 @router.get("/companies/{company_id}/posts")
 async def get_company_posts(company_id: str):
     """Get posts for a company."""
@@ -98,12 +132,7 @@ async def get_company_posts(company_id: str):
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
 
-        linkedin_url = ""
-        lu = company.get("linkedinUrl")
-        if isinstance(lu, dict):
-            linkedin_url = lu.get("primaryLinkUrl", "")
-        elif isinstance(lu, str):
-            linkedin_url = lu
+        linkedin_url = _extract_linkedin_url(company)
 
         posts = await crud.list_posts_for_company(linkedin_url)
         return {"posts": posts}
@@ -120,12 +149,7 @@ async def get_company_users(company_id: str):
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
 
-        linkedin_url = ""
-        lu = company.get("linkedinUrl")
-        if isinstance(lu, dict):
-            linkedin_url = lu.get("primaryLinkUrl", "")
-        elif isinstance(lu, str):
-            linkedin_url = lu
+        linkedin_url = _extract_linkedin_url(company)
 
         users = await crud.list_users_for_company(linkedin_url)
         return {"users": users}
@@ -142,12 +166,7 @@ async def get_company_runs(company_id: str):
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
 
-        linkedin_url = ""
-        lu = company.get("linkedinUrl")
-        if isinstance(lu, dict):
-            linkedin_url = lu.get("primaryLinkUrl", "")
-        elif isinstance(lu, str):
-            linkedin_url = lu
+        linkedin_url = _extract_linkedin_url(company)
 
         runs = await crud.list_runs_for_company(linkedin_url)
         return {"runs": runs}
@@ -171,12 +190,7 @@ async def start_scrape(company_id: str, body: StartScrapeRequest, request: Reque
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
 
-        linkedin_url = ""
-        lu = company.get("linkedinUrl")
-        if isinstance(lu, dict):
-            linkedin_url = lu.get("primaryLinkUrl", "")
-        elif isinstance(lu, str):
-            linkedin_url = lu
+        linkedin_url = _extract_linkedin_url(company)
 
         if not linkedin_url:
             raise HTTPException(status_code=400, detail="Company has no LinkedIn URL")

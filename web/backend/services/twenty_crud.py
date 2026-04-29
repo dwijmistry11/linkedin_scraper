@@ -102,14 +102,19 @@ class TwentyCRUD:
     async def list_companies(self, search: str | None = None, limit: int = 50) -> list[dict]:
         params: dict[str, Any] = {"limit": str(limit)}
         if search:
-            params["filter"] = f"name[like]=%{search}%"
+            params["filter"] = f"name[like]:%{search}%,deletedAt[is]:NULL"
+        else:
+            params["filter"] = "deletedAt[is]:NULL"
         return await self._list("companies", "companies", params)
+
+    async def delete_company(self, crm_id: str) -> bool:
+        return await self._delete("companies", crm_id)
 
     async def get_company(self, crm_id: str) -> dict | None:
         return await self._get("companies", crm_id)
 
     async def find_company_by_linkedin_url(self, url: str) -> dict | None:
-        return await self._find_one("companies", "companies", f"linkedinUrl[like]=%{url}%")
+        return await self._find_one("companies", "companies", f"linkedinUrl[like]:%{url}%")
 
     async def create_company(self, data: dict) -> str | None:
         return await self._create("companies", data)
@@ -123,7 +128,7 @@ class TwentyCRUD:
         return await self._list("people", "people", params)
 
     async def find_person_by_linkedin_url(self, url: str) -> dict | None:
-        return await self._find_one("people", "people", f"linkedinUrl[like]=%{url}%")
+        return await self._find_one("people", "people", f"linkedinUrl[like]:%{url}%")
 
     async def create_person(self, data: dict) -> str | None:
         return await self._create("people", data)
@@ -133,7 +138,7 @@ class TwentyCRUD:
 
     async def list_users_for_company(self, company_url: str) -> list[dict]:
         return await self._list("people", "people", {
-            "filter": f"discoveredFromCompany[eq]={company_url}",
+            "filter": f"discoveredFromCompany[eq]:{company_url}",
             "limit": "200",
         })
 
@@ -150,7 +155,7 @@ class TwentyCRUD:
 
     async def list_runs_for_company(self, company_url: str) -> list[dict]:
         return await self._list("scrapeRuns", "scrapeRuns", {
-            "filter": f"companyLinkedinUrl[eq]={company_url}",
+            "filter": f"companyLinkedinUrl[eq]:{company_url}",
             "limit": "50",
             "orderBy": "createdAt[AscNullsLast]",
         })
@@ -158,7 +163,7 @@ class TwentyCRUD:
     # ── Company Posts (custom object) ─────────────────────────────
 
     async def find_post_by_urn(self, urn: str) -> dict | None:
-        return await self._find_one("companyPosts", "companyPosts", f"urn[eq]={urn}")
+        return await self._find_one("companyPosts", "companyPosts", f"urn[eq]:{urn}")
 
     async def create_post(self, data: dict) -> str | None:
         return await self._create("companyPosts", data)
@@ -168,7 +173,7 @@ class TwentyCRUD:
 
     async def list_posts_for_company(self, company_url: str) -> list[dict]:
         return await self._list("companyPosts", "companyPosts", {
-            "filter": f"companyLinkedinUrl[eq]={company_url}",
+            "filter": f"companyLinkedinUrl[eq]:{company_url}",
             "limit": "500",
         })
 
@@ -177,7 +182,7 @@ class TwentyCRUD:
     async def find_engagement(self, post_urn: str, user_url: str, eng_type: str) -> dict | None:
         """Check if a (post, user, type) engagement already exists."""
         records = await self._list("postEngagements", "postEngagements", {
-            "filter": f"postUrn[eq]={post_urn},userProfileUrl[eq]={user_url},engagementType[eq]={eng_type}",
+            "filter": f"postUrn[eq]:{post_urn},userProfileUrl[eq]:{user_url},engagementType[eq]:{eng_type}",
             "limit": "1",
         })
         return records[0] if records else None
@@ -187,7 +192,7 @@ class TwentyCRUD:
 
     async def list_engagements_for_company(self, company_url: str) -> list[dict]:
         return await self._list("postEngagements", "postEngagements", {
-            "filter": f"companyLinkedinUrl[eq]={company_url}",
+            "filter": f"companyLinkedinUrl[eq]:{company_url}",
             "limit": "500",
         })
 

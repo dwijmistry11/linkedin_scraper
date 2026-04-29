@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Play, Pause, RotateCcw, Loader2, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Play, Pause, RotateCcw, Loader2, ExternalLink, CheckCircle, Circle, Clock } from 'lucide-react';
 import { getCompany, getCompanyPosts, getCompanyUsers, getCompanyRuns, startScrape, pauseScrape, resumeScrape, getScrapeRun } from '../api/companies';
 import { useAppStore } from '../stores/appStore';
 import type { CRMCompany, ScrapeRun, CompanyPost, DiscoveredUser } from '../types';
@@ -52,7 +52,7 @@ export default function CompanyDetailPage() {
           loadData();
         }
       } catch {}
-    }, 3000);
+    }, 5000);
     return () => clearInterval(interval);
   }, [activeRun?.id, activeRun?.status]);
 
@@ -155,32 +155,90 @@ export default function CompanyDetailPage() {
         </div>
         {error && <p className="text-sm text-red-500">{error}</p>}
 
-        {/* Live progress */}
-        {activeRun && activeRun.status !== 'completed' && activeRun.status !== 'failed' && (
-          <div className="space-y-2 pt-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-gray-500">
-                {activeRun.status === 'paused' ? 'Paused' : activeRun.progressMessage || activeRun.phase || 'Starting...'}
-              </span>
-              <span className="text-gray-400">{activeRun.progressPercent || 0}%</span>
-            </div>
-            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
-              <div className={`h-2 rounded-full transition-all duration-500 ${activeRun.status === 'paused' ? 'bg-yellow-500' : 'bg-blue-600'}`} style={{ width: `${activeRun.progressPercent || 0}%` }} />
-            </div>
-            <div className="grid grid-cols-4 gap-2 text-xs text-gray-400">
-              <span>Posts: {activeRun.postsProcessed || 0}/{activeRun.totalPostsFound || '?'}</span>
-              <span>Users: {activeRun.totalUsersFound || 0}</span>
-              <span>Profiles: {activeRun.profilesScraped || 0}/{activeRun.profilesToScrape || '?'}</span>
-              <span>Phase: {activeRun.phase}</span>
-            </div>
-          </div>
-        )}
+        {/* Live progress with step-by-step view */}
+        {activeRun && (
+          <div className="space-y-3 pt-2 border-t border-gray-200 dark:border-gray-700">
+            {/* Pipeline steps */}
+            <div className="space-y-1">
+              {[
+                { key: 'company_info', label: 'Scrape Company Info', desc: 'Get company details and save to CRM' },
+                { key: 'scraping_posts', label: 'Discover Posts', desc: 'Scroll through all company posts' },
+                { key: 'extracting_users', label: 'Extract Engaged Users', desc: 'Open reactions/reposts on each post' },
+                { key: 'scraping_profiles', label: 'Scrape Full Profiles', desc: 'Visit each user profile for full data' },
+                { key: 'done', label: 'Complete', desc: 'All data saved to CRM' },
+              ].map((step) => {
+                const phaseOrder = ['company_info', 'scraping_posts', 'extracting_users', 'scraping_profiles', 'done'];
+                const currentIdx = phaseOrder.indexOf(activeRun.phase || '');
+                const stepIdx = phaseOrder.indexOf(step.key);
+                const isCurrent = step.key === activeRun.phase;
+                const isDone = stepIdx < currentIdx || activeRun.status === 'completed';
+                const isPending = stepIdx > currentIdx && activeRun.status !== 'completed';
 
-        {activeRun?.status === 'completed' && (
-          <p className="text-sm text-green-600">Last run completed. Posts: {activeRun.totalPostsFound}, Users: {activeRun.totalUsersFound}, Profiles: {activeRun.profilesScraped}</p>
-        )}
-        {activeRun?.status === 'failed' && (
-          <p className="text-sm text-red-500">Last run failed: {activeRun.errorMessage}</p>
+                return (
+                  <div key={step.key} className={`flex items-start gap-3 px-3 py-2 rounded-lg ${isCurrent ? 'bg-blue-50 dark:bg-blue-900/20' : ''}`}>
+                    <div className="mt-0.5">
+                      {isDone ? (
+                        <CheckCircle size={16} className="text-green-500" />
+                      ) : isCurrent && activeRun.status === 'running' ? (
+                        <Loader2 size={16} className="text-blue-500 animate-spin" />
+                      ) : isCurrent && activeRun.status === 'paused' ? (
+                        <Clock size={16} className="text-yellow-500" />
+                      ) : (
+                        <Circle size={16} className="text-gray-300 dark:text-gray-600" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm font-medium ${isDone ? 'text-green-600 dark:text-green-400' : isCurrent ? 'text-blue-700 dark:text-blue-300' : 'text-gray-400'}`}>
+                        {step.label}
+                      </p>
+                      <p className="text-xs text-gray-400">{step.desc}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Current status message */}
+            {activeRun.status !== 'completed' && activeRun.status !== 'failed' && (
+              <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-3 space-y-2">
+                <p className="text-sm text-gray-600 dark:text-gray-300">
+                  {activeRun.progressMessage || 'Starting...'}
+                </p>
+                <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-1.5">
+                  <div
+                    className={`h-1.5 rounded-full transition-all duration-500 ${activeRun.status === 'paused' ? 'bg-yellow-500' : 'bg-blue-600'}`}
+                    style={{ width: `${activeRun.progressPercent || 0}%` }}
+                  />
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-400">
+                  {(activeRun.totalPostsFound ?? 0) > 0 && (
+                    <span>Posts: {activeRun.postsProcessed || 0}/{activeRun.totalPostsFound}</span>
+                  )}
+                  {(activeRun.totalUsersFound ?? 0) > 0 && (
+                    <span>New users: {activeRun.totalUsersFound}</span>
+                  )}
+                  {(activeRun.profilesToScrape ?? 0) > 0 && (
+                    <span>Profiles: {activeRun.profilesScraped || 0}/{activeRun.profilesToScrape}</span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {activeRun.status === 'completed' && (
+              <div className="bg-green-50 dark:bg-green-900/20 rounded-lg p-3 border border-green-200 dark:border-green-800">
+                <p className="text-sm text-green-700 dark:text-green-400 font-medium">Scraping complete!</p>
+                <p className="text-xs text-green-600 dark:text-green-500 mt-1">
+                  Posts: {activeRun.totalPostsFound || 0} | New users: {activeRun.totalUsersFound || 0} | Profiles scraped: {activeRun.profilesScraped || 0}
+                </p>
+              </div>
+            )}
+            {activeRun.status === 'failed' && (
+              <div className="bg-red-50 dark:bg-red-900/20 rounded-lg p-3 border border-red-200 dark:border-red-800">
+                <p className="text-sm text-red-700 dark:text-red-400 font-medium">Scraping failed</p>
+                <p className="text-xs text-red-600 dark:text-red-500 mt-1">{activeRun.errorMessage}</p>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

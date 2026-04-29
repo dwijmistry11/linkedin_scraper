@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Search, Building2, Loader2 } from 'lucide-react';
-import { listCompanies, addCompany } from '../api/companies';
+import { Plus, Search, Building2, Loader2, Trash2 } from 'lucide-react';
+import { listCompanies, addCompany, deleteCompany } from '../api/companies';
 import type { CRMCompany } from '../types';
 import { getLinkedInUrl } from '../types';
 
@@ -134,10 +134,25 @@ export default function CompaniesPage() {
                   <p className="font-medium">{c.name || 'Unnamed'}</p>
                   <p className="text-xs text-gray-400 truncate">{getLinkedInUrl(c.linkedinUrl)}</p>
                 </div>
-                <div className="text-right text-xs text-gray-400">
+                <div className="flex items-center gap-3">
                   {c.lastPostScrapedAt && (
-                    <p>Last scraped: {new Date(c.lastPostScrapedAt).toLocaleDateString()}</p>
+                    <span className="text-xs text-gray-400">Last: {new Date(c.lastPostScrapedAt).toLocaleDateString()}</span>
                   )}
+                  <button
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (!confirm(`Delete ${c.name || 'this company'}?`)) return;
+                      try {
+                        await deleteCompany(c.id);
+                        load(search || undefined);
+                      } catch {}
+                    }}
+                    className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                    title="Delete"
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               </div>
             </Link>
