@@ -5,6 +5,7 @@ from playwright.async_api import Page
 
 from ..models.post import Post
 from ..callbacks import ProgressCallback, SilentCallback
+from ..core.human import human_delay, human_read_delay, random_mouse_move
 from .base import BaseScraper
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,29 @@ class CompanyPostsScraper(BaseScraper):
     async def scrape(self, company_url: str, limit: int = 10) -> List[Post]:
         logger.info(f"Starting company posts scraping: {company_url}")
         await self.callback.on_start("company_posts", company_url)
-        
+
+        # Step 1: Warm up — visit LinkedIn feed to establish session cookies
+        # This prevents redirect loops on showcase/company pages
+        try:
+            await self.page.goto(
+                "https://www.linkedin.com/feed/",
+                wait_until="domcontentloaded",
+                timeout=30000,
+            )
+            await human_read_delay()
+            await random_mouse_move(self.page)
+        except Exception as e:
+            logger.warning("Feed warm-up failed: %s", e)
+
+        # Step 2: Visit the company/showcase page (like a real user)
+        base_url = company_url.rstrip('/')
+        if '/posts' in base_url:
+            base_url = base_url.split('/posts')[0]
+        await self.navigate_and_wait(base_url)
+        await human_read_delay()
+        await random_mouse_move(self.page)
+
+        # Step 3: Navigate to posts tab
         posts_url = self._build_posts_url(company_url)
         await self.navigate_and_wait(posts_url)
         await self.callback.on_progress("Navigated to posts page", 10)
@@ -37,6 +60,8 @@ class CompanyPostsScraper(BaseScraper):
     
     def _build_posts_url(self, company_url: str) -> str:
         company_url = company_url.rstrip('/')
+        # Strip any query params (like ?feedView=all) that trigger bot detection
+        company_url = company_url.split('?')[0]
         if '/posts' not in company_url:
             return f"{company_url}/posts/"
         return company_url

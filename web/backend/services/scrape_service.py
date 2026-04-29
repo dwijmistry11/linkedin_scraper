@@ -126,14 +126,21 @@ async def run_scrape(
 
 async def _auto_sync_to_crm(scrape_type: str, result_json: str) -> None:
     """If CRM auto-sync is enabled, push the result to Twenty CRM."""
-    from ..config import settings
-    if not settings.twenty_crm_auto_sync or not settings.twenty_crm_url or not settings.twenty_crm_api_key:
-        return
     if scrape_type not in ("person", "company", "extract_users"):
         return
     try:
+        from ..models import AppConfig
+        async with async_session() as db:
+            auto_sync = await db.get(AppConfig, "crm_auto_sync")
+            if not auto_sync or auto_sync.value != "true":
+                return
+            url_row = await db.get(AppConfig, "crm_url")
+            key_row = await db.get(AppConfig, "crm_api_key")
+            if not url_row or not url_row.value or not key_row or not key_row.value:
+                return
+
         from .twenty_sync import TwentyCRMClient
-        client = TwentyCRMClient(settings.twenty_crm_url, settings.twenty_crm_api_key)
+        client = TwentyCRMClient(url_row.value, key_row.value)
         result = await client.sync_result(scrape_type, result_json)
         logger.info("Auto-synced %s to CRM: %s", scrape_type, result)
         await client.close()

@@ -1,26 +1,16 @@
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard,
-  User,
   Building2,
-  Briefcase,
-  FileText,
-  Users,
-  History,
   KeyRound,
   Settings,
 } from 'lucide-react';
 
 const nav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-  { heading: 'Scrape' },
-  { to: '/scrape/person', label: 'Person', icon: User },
-  { to: '/scrape/company', label: 'Company', icon: Building2 },
-  { to: '/scrape/job', label: 'Job', icon: Briefcase },
-  { to: '/scrape/posts', label: 'Posts', icon: FileText },
-  { to: '/scrape/extract-users', label: 'Extract Users', icon: Users },
+  { heading: 'Monitor' },
+  { to: '/companies', label: 'Companies', icon: Building2 },
   { heading: 'Manage' },
-  { to: '/history', label: 'History', icon: History },
   { to: '/sessions', label: 'Sessions', icon: KeyRound },
   { to: '/settings', label: 'Settings', icon: Settings },
 ] as const;

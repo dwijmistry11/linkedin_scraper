@@ -110,21 +110,6 @@ export interface Post {
   article_url: string | null;
 }
 
-// ── Extract Users types ──
-
-export interface PostEngagementUser {
-  name: string;
-  headline: string | null;
-  profile_url: string | null;
-  engagement_type: 'reaction' | 'repost';
-}
-
-export interface ExtractUsersResult {
-  company_url: string;
-  posts_scraped: number;
-  users: PostEngagementUser[];
-}
-
 // ── API types ──
 
 export interface Session {
@@ -136,39 +121,76 @@ export interface Session {
   updated_at: string;
 }
 
-export interface ScrapeJob {
-  id: string;
-  session_id: string;
-  scrape_type: string;
-  input_url: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
-  progress_percent: number;
-  progress_message: string | null;
-  error_message: string | null;
-  started_at: string | null;
-  completed_at: string | null;
-  created_at: string;
-}
-
-export interface ScrapeResult {
-  id: string;
-  job_id: string;
-  scrape_type: string;
-  result_data: Person | Company | Job | Post[] | string[];
-  created_at: string;
-}
-
-export interface HistoryList {
-  items: ScrapeJob[];
-  total: number;
-  page: number;
-  per_page: number;
-}
-
 export interface AppSettings {
   browser_headless: boolean;
   browser_slow_mo: number;
   max_concurrent_sessions: number;
 }
 
-export type ScrapeType = 'person' | 'company' | 'job' | 'job_search' | 'company_posts';
+// ── Company monitoring types ──
+
+export interface CRMCompany {
+  id: string;
+  name: string | null;
+  linkedinUrl: any; // Can be string or {primaryLinkUrl: string}
+  lastPostScrapedAt: string | null;
+  [key: string]: any;
+}
+
+export interface ScrapeRun {
+  id: string;
+  companyLinkedinUrl: string;
+  companyCrmId: string;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
+  phase: string;
+  progressPercent: number | null;
+  progressMessage: string | null;
+  errorMessage: string | null;
+  totalPostsFound: number | null;
+  postsProcessed: number | null;
+  totalUsersFound: number | null;
+  newUsersFound: number | null;
+  profilesScraped: number | null;
+  profilesToScrape: number | null;
+  usersSynced: number | null;
+  createdAt: string;
+  [key: string]: any;
+}
+
+export interface CompanyPost {
+  id: string;
+  urn: string;
+  companyLinkedinUrl: string;
+  linkedinUrl: string | null;
+  postText: string | null;
+  postedDate: string | null;
+  reactionsCount: number | null;
+  commentsCount: number | null;
+  repostsCount: number | null;
+  lastScrapedAt: string | null;
+  [key: string]: any;
+}
+
+export interface DiscoveredUser {
+  id: string;
+  name: any; // {firstName, lastName}
+  jobTitle: string | null;
+  linkedinUrl: any;
+  profileScrapedAt: string | null;
+  discoveredFromCompany: string | null;
+  [key: string]: any;
+}
+
+// Helper to extract LinkedIn URL from Twenty's link field
+export function getLinkedInUrl(field: any): string {
+  if (!field) return '';
+  if (typeof field === 'string') return field;
+  return field.primaryLinkUrl || '';
+}
+
+// Helper to get display name from Twenty's name field
+export function getDisplayName(name: any): string {
+  if (!name) return '';
+  if (typeof name === 'string') return name;
+  return `${name.firstName || ''} ${name.lastName || ''}`.trim();
+}

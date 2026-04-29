@@ -181,14 +181,34 @@ class BaseScraper:
         """
         for attempt in range(max_retries + 1):
             logger.info(f"Navigating to: {url}")
-            await self.page.goto(url, wait_until=wait_until, timeout=timeout)  # type: ignore
+            try:
+                await self.page.goto(url, wait_until=wait_until, timeout=timeout)  # type: ignore
+            except Exception as nav_error:
+                if attempt >= max_retries:
+                    raise
+                wait_secs = (30 * (2 ** attempt)) + random.randint(5, 15)
+                logger.warning(
+                    "Navigation failed (attempt %d/%d): %s. Waiting %ds...",
+                    attempt + 1, max_retries, str(nav_error)[:100], wait_secs
+                )
+                await asyncio.sleep(wait_secs)
+                # Warm up session before retry — visit feed to re-establish cookies
+                try:
+                    await self.page.goto(
+                        "https://www.linkedin.com/feed/",
+                        wait_until="domcontentloaded",
+                        timeout=30000,
+                    )
+                    await human_delay(2.0, 4.0)
+                except Exception:
+                    pass
+                continue
             try:
                 await self.check_rate_limit()
                 break  # No rate limit — continue
             except RateLimitError as e:
                 if attempt >= max_retries:
-                    raise  # Give up after all retries
-                # Back off: 60s, 120s, 240s (double each time) + random jitter
+                    raise
                 wait_secs = (60 * (2 ** attempt)) + random.randint(10, 30)
                 logger.warning(
                     "Rate limited (attempt %d/%d). Waiting %ds before retry...",

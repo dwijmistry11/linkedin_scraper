@@ -1,13 +1,8 @@
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import AppShell from './components/layout/AppShell';
 import DashboardPage from './pages/DashboardPage';
-import ScrapePersonPage from './pages/ScrapePersonPage';
-import ScrapeCompanyPage from './pages/ScrapeCompanyPage';
-import ScrapeJobPage from './pages/ScrapeJobPage';
-import ScrapePostsPage from './pages/ScrapePostsPage';
-import ExtractUsersPage from './pages/ExtractUsersPage';
-import HistoryPage from './pages/HistoryPage';
-import ResultDetailPage from './pages/ResultDetailPage';
+import CompaniesPage from './pages/CompaniesPage';
+import CompanyDetailPage from './pages/CompanyDetailPage';
 import SessionsPage from './pages/SessionsPage';
 import SettingsPage from './pages/SettingsPage';
 
@@ -17,13 +12,8 @@ export default function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/scrape/person" element={<ScrapePersonPage />} />
-          <Route path="/scrape/company" element={<ScrapeCompanyPage />} />
-          <Route path="/scrape/job" element={<ScrapeJobPage />} />
-          <Route path="/scrape/posts" element={<ScrapePostsPage />} />
-          <Route path="/scrape/extract-users" element={<ExtractUsersPage />} />
-          <Route path="/history" element={<HistoryPage />} />
-          <Route path="/history/:jobId" element={<ResultDetailPage />} />
+          <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/companies/:id" element={<CompanyDetailPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

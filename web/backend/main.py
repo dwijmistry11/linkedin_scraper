@@ -12,7 +12,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .browser_pool import BrowserPool
 from .config import settings
 from .database import init_db
-from .routers import crm, history, scrape, sessions, settings as settings_router
+from .routers import companies, crm, sessions, settings as settings_router
 
 frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
@@ -22,6 +22,19 @@ async def lifespan(app: FastAPI):
     # Startup
     Path(settings.sessions_dir).mkdir(parents=True, exist_ok=True)
     await init_db()
+    # Load CRM settings from DB into memory
+    from .database import async_session as _async_session
+    from .models import AppConfig
+    async with _async_session() as db:
+        for key in ("crm_url", "crm_api_key", "crm_auto_sync"):
+            row = await db.get(AppConfig, key)
+            if row and row.value:
+                if key == "crm_url":
+                    settings.twenty_crm_url = row.value
+                elif key == "crm_api_key":
+                    settings.twenty_crm_api_key = row.value
+                elif key == "crm_auto_sync":
+                    settings.twenty_crm_auto_sync = row.value == "true"
     app.state.browser_pool = BrowserPool(
         sessions_dir=Path(settings.sessions_dir),
         headless=settings.browser_headless,
@@ -50,8 +63,7 @@ app.add_middleware(
 
 # API routers
 app.include_router(sessions.router, prefix="/api/sessions", tags=["sessions"])
-app.include_router(scrape.router, prefix="/api/scrape", tags=["scrape"])
-app.include_router(history.router, prefix="/api/history", tags=["history"])
+app.include_router(companies.router, prefix="/api", tags=["companies"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(crm.router, prefix="/api", tags=["crm"])
 

@@ -8,51 +8,93 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import get_db
-from ..models import ScrapeResult
+from ..models import AppConfig, ScrapeResult
 from ..schemas import CRMSettingsResponse, CRMStatusResponse, CRMSyncResponse, UpdateCRMSettingsRequest
 from ..services.twenty_sync import TwentyCRMClient
 
 router = APIRouter()
 
 
-def _get_client() -> TwentyCRMClient:
-    if not settings.twenty_crm_url or not settings.twenty_crm_api_key:
-        raise HTTPException(status_code=400, detail="CRM not configured. Set URL and API key first.")
-    return TwentyCRMClient(settings.twenty_crm_url, settings.twenty_crm_api_key)
+# ── Persistent config helpers ─────────────────────────────────────
 
+async def _get_config(db: AsyncSession, key: str, default: str = "") -> str:
+    row = await db.get(AppConfig, key)
+    return row.value if row else default
+
+
+async def _set_config(db: AsyncSession, key: str, value: str) -> None:
+    row = await db.get(AppConfig, key)
+    if row:
+        row.value = value
+    else:
+        db.add(AppConfig(key=key, value=value))
+    await db.commit()
+
+
+async def _get_crm_config(db: AsyncSession) -> dict:
+    return {
+        "url": await _get_config(db, "crm_url"),
+        "api_key": await _get_config(db, "crm_api_key"),
+        "auto_sync": (await _get_config(db, "crm_auto_sync", "false")) == "true",
+    }
+
+
+async def _get_client(db: AsyncSession) -> TwentyCRMClient:
+    cfg = await _get_crm_config(db)
+    if not cfg["url"] or not cfg["api_key"]:
+        raise HTTPException(status_code=400, detail="CRM not configured. Set URL and API key first.")
+    return TwentyCRMClient(cfg["url"], cfg["api_key"])
+
+
+# Also keep in-memory settings in sync for auto-sync hook
+async def _sync_to_memory(db: AsyncSession) -> None:
+    cfg = await _get_crm_config(db)
+    settings.twenty_crm_url = cfg["url"]
+    settings.twenty_crm_api_key = cfg["api_key"]
+    settings.twenty_crm_auto_sync = cfg["auto_sync"]
+
+
+# ── Endpoints ─────────────────────────────────────────────────────
 
 @router.get("/crm/settings", response_model=CRMSettingsResponse)
-async def get_crm_settings():
+async def get_crm_settings(db: AsyncSession = Depends(get_db)):
+    cfg = await _get_crm_config(db)
     return CRMSettingsResponse(
-        url=settings.twenty_crm_url,
-        has_api_key=bool(settings.twenty_crm_api_key),
-        auto_sync=settings.twenty_crm_auto_sync,
+        url=cfg["url"],
+        has_api_key=bool(cfg["api_key"]),
+        auto_sync=cfg["auto_sync"],
     )
 
 
 @router.put("/crm/settings", response_model=CRMSettingsResponse)
-async def update_crm_settings(body: UpdateCRMSettingsRequest):
+async def update_crm_settings(body: UpdateCRMSettingsRequest, db: AsyncSession = Depends(get_db)):
     if body.url is not None:
-        settings.twenty_crm_url = body.url.rstrip("/")
+        await _set_config(db, "crm_url", body.url.rstrip("/"))
     if body.api_key is not None:
-        settings.twenty_crm_api_key = body.api_key
+        await _set_config(db, "crm_api_key", body.api_key)
     if body.auto_sync is not None:
-        settings.twenty_crm_auto_sync = body.auto_sync
+        await _set_config(db, "crm_auto_sync", "true" if body.auto_sync else "false")
+
+    # Keep in-memory settings in sync for auto-sync hook
+    await _sync_to_memory(db)
+
+    cfg = await _get_crm_config(db)
     return CRMSettingsResponse(
-        url=settings.twenty_crm_url,
-        has_api_key=bool(settings.twenty_crm_api_key),
-        auto_sync=settings.twenty_crm_auto_sync,
+        url=cfg["url"],
+        has_api_key=bool(cfg["api_key"]),
+        auto_sync=cfg["auto_sync"],
     )
 
 
 @router.get("/crm/status", response_model=CRMStatusResponse)
-async def crm_status():
-    if not settings.twenty_crm_url or not settings.twenty_crm_api_key:
-        return CRMStatusResponse(connected=False, url=settings.twenty_crm_url or "")
-    client = _get_client()
+async def crm_status(db: AsyncSession = Depends(get_db)):
+    cfg = await _get_crm_config(db)
+    if not cfg["url"] or not cfg["api_key"]:
+        return CRMStatusResponse(connected=False, url=cfg["url"])
+    client = TwentyCRMClient(cfg["url"], cfg["api_key"])
     connected = await client.check_connection()
     await client.close()
-    return CRMStatusResponse(connected=connected, url=settings.twenty_crm_url)
+    return CRMStatusResponse(connected=connected, url=cfg["url"])
 
 
 @router.post("/crm/sync/{job_id}", response_model=CRMSyncResponse)
@@ -63,7 +105,7 @@ async def sync_to_crm(job_id: str, db: AsyncSession = Depends(get_db)):
     if not row:
         raise HTTPException(status_code=404, detail="Result not found")
 
-    client = _get_client()
+    client = await _get_client(db)
     try:
         sync_result = await client.sync_result(row.scrape_type, row.result_data)
 
@@ -95,7 +137,7 @@ async def sync_all_to_crm(db: AsyncSession = Depends(get_db)):
     if not rows:
         return CRMSyncResponse(success=True, detail={"synced": 0, "message": "Nothing to sync"})
 
-    client = _get_client()
+    client = await _get_client(db)
     synced = 0
     failed = 0
     try:
@@ -108,7 +150,7 @@ async def sync_all_to_crm(db: AsyncSession = Depends(get_db)):
                     .values(synced_to_crm=True, crm_sync_at=datetime.now(timezone.utc))
                 )
                 synced += 1
-            except Exception as e:
+            except Exception:
                 failed += 1
         await db.commit()
         return CRMSyncResponse(success=True, detail={"synced": synced, "failed": failed})

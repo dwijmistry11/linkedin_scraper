@@ -17,6 +17,14 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class AppConfig(Base):
+    """Key-value store for persistent app configuration."""
+    __tablename__ = "app_config"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 class LinkedInSession(Base):
     __tablename__ = "linkedin_sessions"
 
