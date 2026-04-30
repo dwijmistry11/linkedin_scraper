@@ -110,11 +110,30 @@ class TwentyCRUD:
     async def delete_company(self, crm_id: str) -> bool:
         return await self._delete("companies", crm_id)
 
+    async def find_company_by_name(self, name: str) -> dict | None:
+        return await self._find_one("companies", "companies", f"name[eq]:{name}")
+
+    async def find_or_create_company(self, name: str, linkedin_url: str | None = None) -> str | None:
+        """Find a company by LinkedIn URL or name. Create if not found. Returns CRM ID."""
+        existing = None
+        if linkedin_url:
+            existing = await self.find_company_by_linkedin_url(linkedin_url)
+        if not existing and name:
+            existing = await self.find_company_by_name(name)
+        if existing:
+            return existing["id"]
+
+        # Create new company
+        company_data: dict[str, Any] = {"name": name}
+        if linkedin_url:
+            company_data["linkedinUrl"] = {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": linkedin_url}
+        return await self.create_company(company_data)
+
     async def get_company(self, crm_id: str) -> dict | None:
         return await self._get("companies", crm_id)
 
     async def find_company_by_linkedin_url(self, url: str) -> dict | None:
-        return await self._find_one("companies", "companies", f"linkedinUrl[like]:%{url}%")
+        return await self._find_one("companies", "companies", f"linkedinUrl.primaryLinkUrl[like]:%{url}%")
 
     async def create_company(self, data: dict) -> str | None:
         return await self._create("companies", data)
@@ -128,13 +147,19 @@ class TwentyCRUD:
         return await self._list("people", "people", params)
 
     async def find_person_by_linkedin_url(self, url: str) -> dict | None:
-        return await self._find_one("people", "people", f"linkedinUrl[like]:%{url}%")
+        return await self._find_one("people", "people", f"linkedinUrl.primaryLinkUrl[like]:%{url}%")
 
     async def create_person(self, data: dict) -> str | None:
         return await self._create("people", data)
 
     async def update_person(self, crm_id: str, data: dict) -> bool:
         return await self._update("people", crm_id, data)
+
+    async def link_person_to_company(self, person_crm_id: str, company_crm_id: str) -> bool:
+        """Set the company relation on a person record."""
+        return await self._update("people", person_crm_id, {
+            "companyId": company_crm_id,
+        })
 
     async def list_users_for_company(self, company_url: str) -> list[dict]:
         return await self._list("people", "people", {
@@ -210,8 +235,11 @@ class TwentyCRUD:
 
     @staticmethod
     def map_person_from_scraper(person) -> dict:
-        """Map linkedin_scraper Person model to Twenty People fields."""
-        from linkedin_scraper.models.person import Person
+        """Map linkedin_scraper Person model to Twenty People fields.
+
+        Returns dict with 'crm_data' (fields for Twenty) and 'company_info'
+        (current employer details for company linking).
+        """
         data: dict[str, Any] = {}
 
         if person.name:
@@ -221,26 +249,37 @@ class TwentyCRUD:
                 "lastName": parts[1] if len(parts) > 1 else "",
             }
 
+        # Job title + company from current experience
         if person.experiences:
-            data["jobTitle"] = person.experiences[0].position_title or ""
+            exp = person.experiences[0]
+            data["jobTitle"] = exp.position_title or ""
+
+        # City
         if person.location:
             data["city"] = person.location
 
+        # Email
         for c in person.contacts:
             if c.type == "email":
                 data["emails"] = {"primaryEmail": c.value}
                 break
+
+        # Phone
         for c in person.contacts:
             if c.type == "phone":
                 data["phones"] = {"primaryPhoneNumber": c.value}
                 break
 
+        # LinkedIn URL
         if person.linkedin_url:
             data["linkedinUrl"] = {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": person.linkedin_url}
+
+        # About
         if person.about:
             data["intro"] = person.about
         data["openToWork"] = person.open_to_work
 
+        # Full experience/education JSON
         if person.experiences:
             data["experiencesJson"] = [e.model_dump() for e in person.experiences]
         if person.educations:
@@ -249,6 +288,22 @@ class TwentyCRUD:
         data["profileScrapedAt"] = datetime.now(timezone.utc).isoformat()
 
         return data
+
+    @staticmethod
+    def extract_current_company(person) -> dict | None:
+        """Extract current employer info from Person for company creation/linking.
+
+        Returns {name, linkedin_url} or None if no experience found.
+        """
+        if not person.experiences:
+            return None
+        exp = person.experiences[0]
+        if not exp.institution_name:
+            return None
+        return {
+            "name": exp.institution_name,
+            "linkedin_url": exp.linkedin_url,  # may be None
+        }
 
     @staticmethod
     def map_company_from_scraper(company) -> dict:

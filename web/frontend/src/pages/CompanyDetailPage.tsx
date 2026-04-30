@@ -33,26 +33,39 @@ export default function CompanyDetailPage() {
       setUsers(userRes.data.users || []);
       const allRuns = (runRes.data.runs || []) as ScrapeRun[];
       setRuns(allRuns);
+      // Only set active run if it belongs to THIS company
       const running = allRuns.find((r: ScrapeRun) => r.status === 'running' || r.status === 'paused');
       setActiveRun(running || null);
     } catch {}
   }, [id]);
 
+  // Reset active run when navigating to a different company
+  useEffect(() => {
+    setActiveRun(null);
+  }, [id]);
+
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Poll active run for progress
+  // Poll active run for progress — only when running or paused
   useEffect(() => {
-    if (!activeRun || activeRun.status === 'completed' || activeRun.status === 'failed') return;
+    if (!activeRun) return;
+    if (activeRun.status === 'completed' || activeRun.status === 'failed') return;
     const interval = setInterval(async () => {
       try {
         const { data } = await getScrapeRun(activeRun.id);
         const run = data.run as ScrapeRun;
         setActiveRun(run);
         if (run.status === 'completed' || run.status === 'failed') {
+          clearInterval(interval);
           loadData();
         }
-      } catch {}
-    }, 5000);
+      } catch {
+        // Run not found (404) — stop polling
+        clearInterval(interval);
+        setActiveRun(null);
+        loadData();
+      }
+    }, 8000);
     return () => clearInterval(interval);
   }, [activeRun?.id, activeRun?.status]);
 
