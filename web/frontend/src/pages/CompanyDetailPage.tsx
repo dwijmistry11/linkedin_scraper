@@ -65,7 +65,7 @@ export default function CompanyDetailPage() {
         setActiveRun(null);
         loadData();
       }
-    }, 8000);
+    }, 15000);
     return () => clearInterval(interval);
   }, [activeRun?.id, activeRun?.status]);
 

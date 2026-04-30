@@ -99,20 +99,80 @@ async def run_company_scrape(
         total_new_users = resume.get("total_new_users", 0)
         all_processed_urns = set(resume.get("processed_urns", []))
 
-        # Load already-scraped posts from CRM (posts with lastScrapedAt set)
-        # This covers the crash case — even if in-memory set was lost, CRM knows
+        # Load existing posts from CRM to avoid re-scraping
         existing_posts = await crud.list_posts_for_company(company_url)
+        fully_done_urns = set()  # posts with lastScrapedAt (users already extracted)
+        known_urns = set()       # all posts in CRM (may still need user extraction)
+        pending_posts_from_crm = []  # posts in CRM but users not yet extracted
+
         for ep in existing_posts:
-            if ep.get("lastScrapedAt") and ep.get("urn"):
-                all_processed_urns.add(ep["urn"])
-        if all_processed_urns:
+            urn = ep.get("urn")
+            if not urn:
+                continue
+            known_urns.add(urn)
+            if ep.get("lastScrapedAt"):
+                fully_done_urns.add(urn)
+                all_processed_urns.add(urn)
+            else:
+                # Post exists but users never extracted — queue for extraction
+                pending_posts_from_crm.append(ep)
+
+        if fully_done_urns:
             await _progress(crud, run_crm_id, ws_callback, 7,
-                            f"Resuming — {len(all_processed_urns)} posts already processed, skipping those",
+                            f"{len(fully_done_urns)} posts fully done, {len(pending_posts_from_crm)} pending user extraction",
                             "scraping_posts")
 
         if start_phase in ("scraping_posts", "extracting_users"):
-            await _progress(crud, run_crm_id, ws_callback, 8,
-                            "Step 2: Starting post discovery and user extraction...", "scraping_posts")
+            # First: process any pending posts from CRM that need user extraction
+            if pending_posts_from_crm:
+                await _progress(crud, run_crm_id, ws_callback, 8,
+                                f"Processing {len(pending_posts_from_crm)} posts pending from previous run...",
+                                "extracting_users")
+
+                for i, ep in enumerate(pending_posts_from_crm):
+                    if await _is_paused(crud, run_crm_id):
+                        await _save_checkpoint(crud, run_crm_id, ws_callback, "scraping_posts", {
+                            "batch_number": 0, "total_posts_found": total_posts_found,
+                            "total_new_users": total_new_users, "processed_urns": list(all_processed_urns),
+                        })
+                        return
+
+                    urn = ep.get("urn", "")
+                    post_url = ep.get("linkedinUrl") or f"https://www.linkedin.com/feed/update/{urn}/"
+                    await _progress(crud, run_crm_id, ws_callback, 10,
+                                    f"Pending post {i+1}/{len(pending_posts_from_crm)}: Extracting users...",
+                                    "extracting_users")
+
+                    page = rotator.get_page()
+                    reactions_scraper = PostReactionsScraper(page)
+                    try:
+                        users = await reactions_scraper.scrape(post_url, max_users=200)
+                        await _progress(crud, run_crm_id, ws_callback, 10,
+                                        f"Pending post {i+1}/{len(pending_posts_from_crm)}: Saving {len(users)} users to CRM...",
+                                        "extracting_users")
+                        new = await _upsert_users_to_crm(crud, users, urn, company_url)
+                        total_new_users += new
+                    except Exception as e:
+                        logger.warning("Failed extracting users from pending post %s: %s", urn, e)
+
+                    await crud.update_post(ep["id"], {"lastScrapedAt": datetime.now(timezone.utc).isoformat()})
+                    all_processed_urns.add(urn)
+                    await crud.update_scrape_run(run_crm_id, {
+                        "postsProcessed": len(all_processed_urns), "totalUsersFound": total_new_users,
+                        "newUsersFound": total_new_users,
+                    })
+                    delay = random.uniform(5.0, 12.0)
+                    await _progress(crud, run_crm_id, ws_callback, 10,
+                                    f"Pending post {i+1}/{len(pending_posts_from_crm)} done. Waiting {int(delay)}s...",
+                                    "extracting_users")
+                    await asyncio.sleep(delay)
+                    await random_mouse_move(page)
+
+                # Scrape profiles for pending batch
+                batch_profiles = await _scrape_batch_profiles(crud, run_crm_id, ws_callback, rotator, company_url, 0)
+
+            await _progress(crud, run_crm_id, ws_callback, 12,
+                            "Discovering new posts...", "scraping_posts")
 
             page = rotator.get_page()
             posts_scraper = CompanyPostsScraper(page)
@@ -147,8 +207,8 @@ async def run_company_scrape(
                     keep_going = False
                     continue
 
-                # Filter to only new posts we haven't processed yet
-                new_posts = [p for p in posts if p.urn and p.urn not in all_processed_urns]
+                # Filter to only truly new posts (not in CRM at all, not already processed)
+                new_posts = [p for p in posts if p.urn and p.urn not in all_processed_urns and p.urn not in known_urns]
 
                 if not new_posts:
                     await _progress(crud, run_crm_id, ws_callback, 15,
@@ -234,35 +294,12 @@ async def run_company_scrape(
                                             "extracting_users")
                             users = []
 
-                        # Upsert users
-                        for user in users:
-                            if not user.profile_url:
-                                continue
-                            existing_person = await crud.find_person_by_linkedin_url(user.profile_url)
-                            if existing_person:
-                                person_crm_id = existing_person["id"]
-                            else:
-                                parts = user.name.strip().split(None, 1) if user.name else ["", ""]
-                                person_data = {
-                                    "name": {"firstName": parts[0] if parts else "", "lastName": parts[1] if len(parts) > 1 else ""},
-                                    "linkedinUrl": {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": user.profile_url},
-                                    "discoveredFromCompany": company_url,
-                                }
-                                if user.headline:
-                                    person_data["jobTitle"] = user.headline
-                                person_crm_id = await crud.create_person(person_data)
-                                total_new_users += 1
-
-                            if person_crm_id:
-                                existing_eng = await crud.find_engagement(post.urn, user.profile_url, user.engagement_type)
-                                if not existing_eng:
-                                    await crud.create_engagement({
-                                        "name": f"{user.name} - {user.engagement_type} - {post.urn[-12:]}",
-                                        "postUrn": post.urn,
-                                        "userProfileUrl": user.profile_url,
-                                        "engagementType": user.engagement_type,
-                                        "companyLinkedinUrl": company_url,
-                                    })
+                        # Upsert users with pacing
+                        await _progress(crud, run_crm_id, ws_callback, 22,
+                                        f"Batch {batch_number}, post {i+1}/{len(eligible_posts)}: Saving {len(users)} users to CRM...",
+                                        "extracting_users")
+                        new = await _upsert_users_to_crm(crud, users, post.urn, company_url)
+                        total_new_users += new
 
                         # Update post lastScrapedAt
                         post_record = await crud.find_post_by_urn(post.urn)
@@ -325,6 +362,51 @@ async def run_company_scrape(
     except Exception as e:
         logger.exception("Company scrape failed: %s", company_url)
         await _fail_run(crud, run_crm_id, ws_callback, str(e))
+
+
+# ── User upsert helper ────────────────────────────────────────────
+
+async def _upsert_users_to_crm(
+    crud: TwentyCRUD, users: list, urn: str, company_url: str
+) -> int:
+    """Upsert users + engagements to CRM with pacing. Returns new user count."""
+    new_count = 0
+    for user in users:
+        if not user.profile_url:
+            continue
+        existing_person = await crud.find_person_by_linkedin_url(user.profile_url)
+        if existing_person:
+            person_crm_id = existing_person["id"]
+        else:
+            parts = user.name.strip().split(None, 1) if user.name else ["", ""]
+            person_data = {
+                "name": {"firstName": parts[0] if parts else "", "lastName": parts[1] if len(parts) > 1 else ""},
+                "linkedinUrl": {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": user.profile_url},
+                "discoveredFromCompany": company_url,
+            }
+            if user.headline:
+                person_data["jobTitle"] = user.headline
+            person_crm_id = await crud.create_person(person_data)
+            new_count += 1
+
+        if person_crm_id:
+            if not existing_person:
+                await crud.create_engagement({
+                    "name": f"{user.name} - {user.engagement_type} - {urn[-12:]}",
+                    "postUrn": urn, "userProfileUrl": user.profile_url,
+                    "engagementType": user.engagement_type, "companyLinkedinUrl": company_url,
+                })
+            else:
+                existing_eng = await crud.find_engagement(urn, user.profile_url, user.engagement_type)
+                if not existing_eng:
+                    await crud.create_engagement({
+                        "name": f"{user.name} - {user.engagement_type} - {urn[-12:]}",
+                        "postUrn": urn, "userProfileUrl": user.profile_url,
+                        "engagementType": user.engagement_type, "companyLinkedinUrl": company_url,
+                    })
+        # Pace: ~2s between users to stay under 100 req/min with 2-3 calls each
+        await asyncio.sleep(2.0)
+    return new_count
 
 
 # ── Batch profile scraping ────────────────────────────────────────

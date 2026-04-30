@@ -9,8 +9,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Rate limit: 100 req/min → ~0.6s between calls
-_API_DELAY = 0.6
+# Rate limit: 100 req/min. Frontend polls ~8/min, leaves ~90 for scraping.
+# With ~4 calls per user, that's ~22 users/min → 1 user per ~2.7s
+_API_DELAY = 1.2  # 50 calls/min max from scraper, leaves headroom
+_RATE_LIMIT_RETRY_WAIT = 65
 
 
 class TwentyCRUD:
@@ -41,12 +43,18 @@ class TwentyCRUD:
     # ── Generic CRUD ──────────────────────────────────────────────
 
     async def _list(self, endpoint: str, key: str, params: dict | None = None) -> list[dict]:
-        """GET /rest/{endpoint} and return data.{key} list."""
-        client = await self._get_client()
-        resp = await client.get(f"/rest/{endpoint}", params=params or {})
-        if resp.status_code == 200:
-            return resp.json().get("data", {}).get(key, [])
-        logger.warning("List %s failed: %s %s", endpoint, resp.status_code, resp.text[:200])
+        """GET /rest/{endpoint} and return data.{key} list. Retries on 429."""
+        for attempt in range(3):
+            client = await self._get_client()
+            resp = await client.get(f"/rest/{endpoint}", params=params or {})
+            if resp.status_code == 200:
+                return resp.json().get("data", {}).get(key, [])
+            if resp.status_code == 429:
+                logger.warning("Rate limited on list %s. Waiting %ds...", endpoint, _RATE_LIMIT_RETRY_WAIT)
+                await asyncio.sleep(_RATE_LIMIT_RETRY_WAIT)
+                continue
+            logger.warning("List %s failed: %s %s", endpoint, resp.status_code, resp.text[:200])
+            return []
         return []
 
     async def _get(self, endpoint: str, record_id: str) -> dict | None:
@@ -65,26 +73,39 @@ class TwentyCRUD:
         return None
 
     async def _create(self, endpoint: str, data: dict) -> str | None:
-        """POST /rest/{endpoint}. Returns created record ID."""
-        client = await self._get_client()
-        resp = await client.post(f"/rest/{endpoint}", json=data)
-        await self._throttle()
-        if resp.status_code in (200, 201):
-            result = resp.json().get("data", {})
-            # Find the ID in nested response
-            for v in result.values():
-                if isinstance(v, dict) and "id" in v:
-                    return v["id"]
-            return result.get("id")
-        logger.warning("Create %s failed: %s %s", endpoint, resp.status_code, resp.text[:300])
+        """POST /rest/{endpoint}. Returns created record ID. Retries on 429."""
+        for attempt in range(3):
+            client = await self._get_client()
+            resp = await client.post(f"/rest/{endpoint}", json=data)
+            await self._throttle()
+            if resp.status_code in (200, 201):
+                result = resp.json().get("data", {})
+                for v in result.values():
+                    if isinstance(v, dict) and "id" in v:
+                        return v["id"]
+                return result.get("id")
+            if resp.status_code == 429:
+                logger.warning("Rate limited on create %s. Waiting %ds...", endpoint, _RATE_LIMIT_RETRY_WAIT)
+                await asyncio.sleep(_RATE_LIMIT_RETRY_WAIT)
+                continue
+            logger.warning("Create %s failed: %s %s", endpoint, resp.status_code, resp.text[:300])
+            return None
         return None
 
     async def _update(self, endpoint: str, record_id: str, data: dict) -> bool:
-        """PATCH /rest/{endpoint}/{id}."""
-        client = await self._get_client()
-        resp = await client.patch(f"/rest/{endpoint}/{record_id}", json=data)
-        await self._throttle()
-        return resp.status_code == 200
+        """PATCH /rest/{endpoint}/{id}. Retries on 429."""
+        for attempt in range(3):
+            client = await self._get_client()
+            resp = await client.patch(f"/rest/{endpoint}/{record_id}", json=data)
+            await self._throttle()
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 429:
+                logger.warning("Rate limited on update %s. Waiting %ds...", endpoint, _RATE_LIMIT_RETRY_WAIT)
+                await asyncio.sleep(_RATE_LIMIT_RETRY_WAIT)
+                continue
+            return False
+        return False
 
     async def _delete(self, endpoint: str, record_id: str) -> bool:
         """DELETE /rest/{endpoint}/{id}."""
