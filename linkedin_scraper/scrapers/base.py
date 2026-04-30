@@ -207,6 +207,15 @@ class BaseScraper:
                 await self.check_rate_limit()
                 break  # No rate limit — continue
             except RateLimitError as e:
+                # Check if the page actually has content despite rate limit text
+                # LinkedIn profile pages sometimes show rate limit warnings in
+                # sidebars/footers but the main content is loaded fine
+                has_profile = await self.page.locator("h1").count() > 0
+                current = self.page.url
+                if has_profile and ("/in/" in current or "/company/" in current or "/showcase/" in current):
+                    logger.info("Rate limit text found but page has content — proceeding")
+                    break
+
                 if attempt >= max_retries:
                     raise
                 wait_secs = (60 * (2 ** attempt)) + random.randint(10, 30)

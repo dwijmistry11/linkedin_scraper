@@ -43,16 +43,36 @@ class PersonScraper(BaseScraper):
         await self.callback.on_start("person", linkedin_url)
 
         try:
-            # Navigate to profile first (this loads the page with our session)
-            await self.navigate_and_wait(linkedin_url)
-            await self.callback.on_progress("Navigated to profile", 10)
+            # Check if we're already on this profile page (e.g. from a previous step)
+            current_url = self.page.url
+            already_on_page = "/in/" in current_url and any(
+                part in linkedin_url for part in current_url.split("/") if len(part) > 5
+            )
 
-            # Now check if logged in
-            await self.ensure_logged_in()
+            if not already_on_page:
+                try:
+                    await self.navigate_and_wait(linkedin_url)
+                except Exception as nav_err:
+                    # Navigation failed — check if page has profile content anyway
+                    logger.warning("Navigation failed (%s), checking if page has content...", nav_err)
+                    has_content = await self.page.locator("h1").count() > 0
+                    if not has_content:
+                        raise  # No content on page, re-raise
+
+            await self.callback.on_progress("On profile page", 10)
+
+            # Check if logged in (skip if page already has content)
+            try:
+                await self.ensure_logged_in()
+            except Exception:
+                pass  # May fail on rate-limited pages but content could still be there
 
             # Wait for main content
-            await self.page.wait_for_selector("main", timeout=10000)
-            await self.wait_and_focus(1)
+            try:
+                await self.page.wait_for_selector("main", timeout=10000)
+            except Exception:
+                pass
+            await self.wait_and_focus(2)
 
             # Get name and location
             name, location = await self._get_name_and_location()
@@ -61,16 +81,27 @@ class PersonScraper(BaseScraper):
             # Check open to work
             open_to_work = await self._check_open_to_work()
 
+            # Get headline (current title from top card — visible even on restricted profiles)
+            headline = await self._get_headline()
+
             # Get about
             about = await self._get_about()
             await self.callback.on_progress("Got about section", 30)
 
-            # Scroll to load content
+            # Scroll slowly to load all lazy content (experience, education, etc.)
+            await self.wait_and_focus(2)
             await self.scroll_page_to_half()
-            await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=3)
+            await self.wait_and_focus(3)
+            await self.scroll_page_to_bottom(pause_time=2.0, max_scrolls=5)
+            await self.wait_and_focus(2)
 
             # Get experiences
             experiences = await self._get_experiences(linkedin_url)
+
+            # If no experiences found but we have a headline, create one from the top card
+            if not experiences and headline:
+                experiences = [Experience(position_title=headline)]
+
             await self.callback.on_progress(f"Got {len(experiences)} experiences", 60)
 
             educations = await self._get_educations(linkedin_url)
@@ -84,8 +115,22 @@ class PersonScraper(BaseScraper):
                 f"Got {len(accomplishments)} accomplishments", 85
             )
 
+            # Capture the real profile URL BEFORE opening contact overlay
+            actual_url = self.page.url.split("?")[0].rstrip("/")
+            if "/in/" in actual_url and "/overlay" not in actual_url:
+                linkedin_url = actual_url
+
             contacts = await self._get_contacts(linkedin_url)
             await self.callback.on_progress(f"Got {len(contacts)} contacts", 95)
+
+            # Close contact dialog if open
+            try:
+                close_btn = self.page.locator('button[aria-label="Dismiss"], button[aria-label="Close"]').first
+                if await close_btn.count() > 0:
+                    await close_btn.click(timeout=3000)
+                    await self.wait_and_focus(1)
+            except Exception:
+                pass
 
             person = Person(
                 linkedin_url=linkedin_url,
@@ -110,16 +155,94 @@ class PersonScraper(BaseScraper):
             raise ScrapingError(f"Failed to scrape person profile: {e}")
 
     async def _get_name_and_location(self) -> tuple[str, Optional[str]]:
-        """Extract name and location from profile."""
+        """Extract name and location from profile using multiple strategies."""
+        name = "Unknown"
+        location = None
+
         try:
-            name = await self.safe_extract_text("h1", default="Unknown")
-            location = await self.safe_extract_text(
-                ".text-body-small.inline.t-black--light.break-words", default=""
-            )
-            return name, location if location else None
+            # Strategy 1: h1 tag
+            h1_count = await self.page.locator("h1").count()
+            if h1_count > 0:
+                name = (await self.page.locator("h1").first.text_content(timeout=5000) or "").strip()
+
+            # Strategy 2: page title "Name | LinkedIn"
+            if not name or name == "Unknown":
+                title = await self.page.title()
+                if title and "|" in title:
+                    name = title.split("|")[0].strip()
+
+            # Strategy 3: JavaScript extraction from the profile top card
+            if not name or name == "Unknown":
+                result = await self.page.evaluate('''() => {
+                    // Try various selectors LinkedIn uses for the name
+                    const selectors = [
+                        'h1',
+                        '.text-heading-xlarge',
+                        '[data-anonymize="person-name"]',
+                        '.pv-top-card--list li:first-child',
+                    ];
+                    for (const sel of selectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.innerText.trim().length > 1) return el.innerText.trim();
+                    }
+                    return null;
+                }''')
+                if result:
+                    name = result.split('\n')[0].strip()
+
+            # Location: try multiple selectors
+            for selector in [
+                ".text-body-small.inline.t-black--light.break-words",
+                ".pv-text-details__left-panel .text-body-small",
+                "[data-anonymize='location']",
+            ]:
+                loc = await self.safe_extract_text(selector, default="", timeout=3000)
+                if loc:
+                    location = loc
+                    break
+
+            # Fallback: extract location via JS
+            if not location:
+                loc_result = await self.page.evaluate('''() => {
+                    const body = document.body.innerText;
+                    // Look for pattern: "City, Region" after the name
+                    const match = body.match(/\\n([A-Z][a-z]+(?:,\\s*[A-Z][a-zA-Z\\s]+)+)\\n/);
+                    return match ? match[1] : null;
+                }''')
+                if loc_result:
+                    location = loc_result
+
         except Exception as e:
             logger.warning(f"Error getting name/location: {e}")
-            return "Unknown", None
+
+        return name, location
+
+    async def _get_headline(self) -> Optional[str]:
+        """Extract the headline/current title from the profile top card."""
+        try:
+            # Try multiple selectors for headline
+            for selector in [
+                ".text-body-medium.break-words",
+                "[data-anonymize='headline']",
+                ".pv-top-card--list .text-body-medium",
+            ]:
+                text = await self.safe_extract_text(selector, default="", timeout=3000)
+                if text:
+                    return text.strip()
+
+            # JS fallback: get text right after the name
+            result = await self.page.evaluate('''() => {
+                const title = document.title.split('|')[0].trim();
+                const body = document.body.innerText;
+                const nameIdx = body.indexOf(title);
+                if (nameIdx === -1) return null;
+                const after = body.substring(nameIdx + title.length, nameIdx + title.length + 200);
+                const lines = after.split('\\n').map(l => l.trim()).filter(l => l.length > 5);
+                return lines[0] || null;
+            }''')
+            return result
+        except Exception:
+            return None
 
     async def _check_open_to_work(self) -> bool:
         """Check if profile has open to work badge."""
@@ -181,24 +304,12 @@ class PersonScraper(BaseScraper):
                             continue
             
             if not experiences:
-                exp_url = urljoin(base_url, "details/experience")
-                await self.navigate_and_wait(exp_url)
-                await self.page.wait_for_selector("main", timeout=10000)
-                await self.wait_and_focus(1.5)
-                await self.scroll_page_to_half()
-                await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=5)
-
+                # Don't navigate to /details/experience — causes rate limiting
+                # Try alternative selectors on the current page instead
                 items = []
-                main_element = self.page.locator('main')
-                if await main_element.count() > 0:
-                    list_items = await main_element.locator('list > listitem, ul > li').all()
-                    if list_items:
-                        items = list_items
-                
-                if not items:
-                    old_list = self.page.locator(".pvs-list__container").first
-                    if await old_list.count() > 0:
-                        items = await old_list.locator(".pvs-list__paged-list-item").all()
+                old_list = self.page.locator(".pvs-list__container").first
+                if await old_list.count() > 0:
+                    items = await old_list.locator(".pvs-list__paged-list-item").all()
 
                 for item in items:
                     try:
@@ -543,24 +654,12 @@ class PersonScraper(BaseScraper):
                             continue
             
             if not educations:
-                edu_url = urljoin(base_url, "details/education")
-                await self.navigate_and_wait(edu_url)
-                await self.page.wait_for_selector("main", timeout=10000)
-                await self.wait_and_focus(2)
-                await self.scroll_page_to_half()
-                await self.scroll_page_to_bottom(pause_time=0.5, max_scrolls=5)
-
+                # Don't navigate to /details/education — causes rate limiting
+                # Try alternative selectors on the current page instead
                 items = []
-                main_element = self.page.locator('main')
-                if await main_element.count() > 0:
-                    list_items = await main_element.locator('ul > li, ol > li').all()
-                    if list_items:
-                        items = list_items
-                
-                if not items:
-                    old_list = self.page.locator(".pvs-list__container").first
-                    if await old_list.count() > 0:
-                        items = await old_list.locator(".pvs-list__paged-list-item").all()
+                old_list = self.page.locator(".pvs-list__container").first
+                if await old_list.count() > 0:
+                    items = await old_list.locator(".pvs-list__paged-list-item").all()
 
                 for item in items:
                     try:
@@ -797,44 +896,8 @@ class PersonScraper(BaseScraper):
                             logger.debug(f"Error processing interest tab: {e}")
                             continue
             
-            if not interests:
-                interests_url = urljoin(base_url, "details/interests/")
-                await self.navigate_and_wait(interests_url)
-                await self.page.wait_for_selector("main", timeout=10000)
-                await self.wait_and_focus(1.5)
-
-                tabs = await self.page.locator('[role="tab"], tab').all()
-
-                if not tabs:
-                    logger.debug("No interests tabs found on profile")
-                    return interests
-
-                for tab in tabs:
-                    try:
-                        tab_name = await tab.text_content()
-                        if not tab_name:
-                            continue
-                        tab_name = tab_name.strip()
-                        category = self._map_interest_tab_to_category(tab_name)
-
-                        await tab.click()
-                        await self.wait_and_focus(0.8)
-
-                        tabpanel = self.page.locator('[role="tabpanel"], tabpanel').first
-                        list_items = await tabpanel.locator("listitem, li, .pvs-list__paged-list-item").all()
-
-                        for item in list_items:
-                            try:
-                                interest = await self._parse_interest_item(item, category)
-                                if interest:
-                                    interests.append(interest)
-                            except Exception as e:
-                                logger.debug(f"Error parsing interest item: {e}")
-                                continue
-
-                    except Exception as e:
-                        logger.debug(f"Error processing interest tab: {e}")
-                        continue
+            # Don't navigate to /details/interests — causes rate limiting
+            # Interests from the main page are sufficient
 
         except Exception as e:
             logger.warning(f"Error getting interests: {e}")
@@ -879,6 +942,55 @@ class PersonScraper(BaseScraper):
             return tab_lower
 
     async def _get_accomplishments(self, base_url: str) -> list[Accomplishment]:
+        """Extract accomplishments from the main profile page — no navigation to detail pages."""
+        accomplishments = []
+
+        # Map section headings on the profile page to categories
+        section_mappings = {
+            "Licenses & certifications": "certification",
+            "Certifications": "certification",
+            "Honors & awards": "honor",
+            "Publications": "publication",
+            "Patents": "patent",
+            "Courses": "course",
+            "Projects": "project",
+            "Languages": "language",
+            "Organizations": "organization",
+        }
+
+        for heading_text, category in section_mappings.items():
+            try:
+                heading = self.page.locator(f'h2:has-text("{heading_text}")').first
+                if await heading.count() == 0:
+                    continue
+
+                section = heading.locator('xpath=ancestor::*[.//ul or .//ol][1]')
+                if await section.count() == 0:
+                    section = heading.locator('xpath=ancestor::*[4]')
+                if await section.count() == 0:
+                    continue
+
+                items = await section.locator('ul > li, ol > li').all()
+
+                seen_titles: set[str] = set()
+                for item in items:
+                    try:
+                        accomplishment = await self._parse_accomplishment_item(item, category)
+                        if accomplishment and accomplishment.title not in seen_titles:
+                            seen_titles.add(accomplishment.title)
+                            accomplishments.append(accomplishment)
+                    except Exception as e:
+                        logger.debug(f"Error parsing {category} item: {e}")
+                        continue
+
+            except Exception as e:
+                logger.debug(f"Error getting {heading_text}: {e}")
+                continue
+
+        return accomplishments
+
+    async def _get_accomplishments_DISABLED(self, base_url: str) -> list[Accomplishment]:
+        """OLD: navigates to detail pages — disabled to avoid rate limiting."""
         accomplishments = []
 
         accomplishment_sections = [
@@ -1021,17 +1133,25 @@ class PersonScraper(BaseScraper):
             return None
 
     async def _get_contacts(self, base_url: str) -> list[Contact]:
-        """Extract contact info from the contact-info overlay dialog."""
+        """Extract contact info by clicking the Contact info link on the profile page."""
         contacts = []
 
         try:
-            contact_url = urljoin(base_url, "overlay/contact-info/")
-            await self.navigate_and_wait(contact_url)
-            await self.wait_and_focus(1)
+            # Click the "Contact info" link on the profile page to open the modal
+            contact_link = self.page.locator('a:has-text("Contact info"), a[href*="contact-info"]').first
+            try:
+                if await contact_link.count() == 0:
+                    logger.debug("No Contact info link found on profile")
+                    return contacts
+                await contact_link.click(timeout=5000)
+                await self.wait_and_focus(2)
+            except Exception:
+                logger.debug("Could not click Contact info link")
+                return contacts
 
             dialog = self.page.locator('dialog, [role="dialog"]').first
             if await dialog.count() == 0:
-                logger.warning("Contact info dialog not found")
+                logger.debug("Contact info dialog not found")
                 return contacts
 
             contact_sections = await dialog.locator('h3').all()

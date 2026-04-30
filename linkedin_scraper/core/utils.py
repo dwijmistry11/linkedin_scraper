@@ -86,21 +86,27 @@ async def detect_rate_limit(page: Page) -> None:
     except Exception:
         pass
     
-    # Check for rate limit messages
+    # Check for rate limit messages — but only if the page has no real content
+    # LinkedIn profile/company pages often contain "try again later" in ads/sidebar
+    # which triggers false positives
     try:
-        body_text = await page.locator('body').text_content(timeout=1000)
-        if body_text:
-            body_lower = body_text.lower()
-            if any(phrase in body_lower for phrase in [
-                'too many requests',
-                'rate limit',
-                'slow down',
-                'try again later'
-            ]):
-                raise RateLimitError(
-                    "Rate limit message detected on page.",
-                    suggested_wait_time=1800  # 30 minutes
-                )
+        has_content = await page.locator('h1').count() > 0
+        current_url = page.url
+        is_content_page = "/in/" in current_url or "/company/" in current_url or "/showcase/" in current_url or "/feed/" in current_url
+
+        if not has_content and not is_content_page:
+            body_text = await page.locator('body').text_content(timeout=1000)
+            if body_text:
+                body_lower = body_text.lower()
+                if any(phrase in body_lower for phrase in [
+                    'too many requests',
+                    'rate limit',
+                    'slow down',
+                ]):
+                    raise RateLimitError(
+                        "Rate limit message detected on page.",
+                        suggested_wait_time=1800
+                    )
     except PlaywrightTimeoutError:
         pass
 
