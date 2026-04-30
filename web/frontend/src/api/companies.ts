@@ -19,6 +19,12 @@ export const getCompanyRuns = (id: string) => api.get(`/companies/${id}/runs`);
 export const startScrape = (companyId: string, sessionIds: string[]) =>
   api.post(`/companies/${companyId}/scrape`, { session_ids: sessionIds });
 
+export const startProfileScrape = (companyId: string, sessionIds: string[]) =>
+  api.post(`/companies/${companyId}/scrape-profiles`, { session_ids: sessionIds });
+
+export const startCompanyScrape = (companyId: string, sessionIds: string[]) =>
+  api.post(`/companies/${companyId}/scrape-companies`, { session_ids: sessionIds });
+
 export const pauseScrape = (runId: string) =>
   api.post(`/scrape-runs/${runId}/pause`);
 

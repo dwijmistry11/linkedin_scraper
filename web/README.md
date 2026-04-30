@@ -9,34 +9,76 @@ Web interface for managing LinkedIn scraping operations. Built with FastAPI + Re
 - Python 3.8+ with the `linkedin_scraper` package installed (`pip install -e .` from repo root)
 - Node.js 18+
 - Playwright Chromium (`playwright install chromium`)
+- Tor (optional, for IP rotation)
 
 ### 1. Install dependencies
 
 ```bash
+# From repo root
+pip install -e .
+playwright install chromium
+
 # Backend
 cd web
 pip install -r requirements.txt
 
 # Frontend
-cd frontend
+cd web/frontend
 npm install
 ```
 
-### 2. Start the servers
+### 2. Install and start Tor (optional, recommended)
+
+Tor routes browser traffic through rotating IPs to avoid LinkedIn rate limiting. The scraper auto-detects Tor — if it's running, traffic routes through it automatically.
+
+**macOS:**
+```bash
+brew install tor
+
+# Enable control port for IP renewal between scrape batches
+echo -e "ControlPort 9051\nCookieAuthentication 0" >> /opt/homebrew/etc/tor/torrc
+
+# Start Tor
+brew services start tor
+```
+
+**Ubuntu/Debian:**
+```bash
+sudo apt install tor
+
+# Enable control port
+echo -e "ControlPort 9051\nCookieAuthentication 0" | sudo tee -a /etc/tor/torrc
+
+# Restart
+sudo systemctl restart tor
+```
+
+**Verify Tor is running:**
+```bash
+# Should return an IP different from your real one
+curl --socks5 127.0.0.1:9050 https://api.ipify.org
+```
+
+**Note:** LinkedIn blocks some Tor exit nodes. If you get blocked, stop Tor and the scraper will automatically fall back to your direct IP with human-like delays (30-60s between actions).
+
+### 3. Start the servers
 
 ```bash
-# Terminal 1: Backend (from web/)
+# Terminal 1: Start Tor (if not using brew services)
+tor
+
+# Terminal 2: Backend (from web/)
+cd web
 uvicorn backend.main:app --reload --port 8000
 
-# Terminal 2: Frontend dev server (from web/frontend/)
+# Terminal 3: Frontend dev server (from web/frontend/)
+cd web/frontend
 npm run dev
 ```
 
 Open http://localhost:5173
 
 ### Production mode
-
-Build the frontend and let FastAPI serve it:
 
 ```bash
 cd web/frontend

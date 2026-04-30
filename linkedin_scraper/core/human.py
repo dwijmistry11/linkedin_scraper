@@ -25,13 +25,13 @@ async def human_read_delay() -> None:
 
 
 async def human_between_pages() -> None:
-    """Delay between navigating to different pages (5–12s)."""
-    await asyncio.sleep(random.uniform(5.0, 12.0))
+    """Delay between navigating to different pages (15–30s)."""
+    await asyncio.sleep(random.uniform(15.0, 30.0))
 
 
 async def human_between_profiles() -> None:
-    """Longer delay between scraping different profiles (8–18s)."""
-    await asyncio.sleep(random.uniform(8.0, 18.0))
+    """Longer delay between scraping different profiles (30–60s)."""
+    await asyncio.sleep(random.uniform(30.0, 60.0))
 
 
 async def random_mouse_move(page: Page) -> None:

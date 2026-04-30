@@ -35,11 +35,27 @@ async def lifespan(app: FastAPI):
                     settings.twenty_crm_api_key = row.value
                 elif key == "crm_auto_sync":
                     settings.twenty_crm_auto_sync = row.value == "true"
+    # Mark any "running" scrape runs as failed (can't be running if server just started)
+    if settings.twenty_crm_url and settings.twenty_crm_api_key:
+        try:
+            from .services.twenty_crud import TwentyCRUD
+            crud = TwentyCRUD(settings.twenty_crm_url, settings.twenty_crm_api_key)
+            stale_runs = await crud._list("scrapeRuns", "scrapeRuns", {"filter": "status[eq]:running", "limit": "50"})
+            for run in stale_runs:
+                await crud.update_scrape_run(run["id"], {"status": "failed", "errorMessage": "Server restarted"})
+            if stale_runs:
+                import logging
+                logging.getLogger(__name__).info("Marked %d stale runs as failed on startup", len(stale_runs))
+            await crud.close()
+        except Exception:
+            pass
+
     app.state.browser_pool = BrowserPool(
         sessions_dir=Path(settings.sessions_dir),
         headless=settings.browser_headless,
         slow_mo=settings.browser_slow_mo,
         max_sessions=settings.max_concurrent_sessions,
+        use_tor=settings.use_tor,
     )
     yield
     # Shutdown

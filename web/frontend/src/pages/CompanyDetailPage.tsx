@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Play, Pause, RotateCcw, Loader2, ExternalLink, CheckCircle, Circle, Clock } from 'lucide-react';
-import { getCompany, getCompanyPosts, getCompanyUsers, getCompanyRuns, startScrape, pauseScrape, resumeScrape, getScrapeRun } from '../api/companies';
+import { ArrowLeft, Play, Pause, RotateCcw, Loader2, ExternalLink, CheckCircle, Circle, Clock, UserCheck, Building2 } from 'lucide-react';
+import { getCompany, getCompanyPosts, getCompanyUsers, getCompanyRuns, startScrape, startProfileScrape, startCompanyScrape, pauseScrape, resumeScrape, getScrapeRun } from '../api/companies';
 import { useAppStore } from '../stores/appStore';
 import type { CRMCompany, ScrapeRun, CompanyPost, DiscoveredUser } from '../types';
 import { getLinkedInUrl, getDisplayName } from '../types';
@@ -19,6 +19,7 @@ export default function CompanyDetailPage() {
   const [selectedSessions, setSelectedSessions] = useState<string[]>([]);
   const [activeRun, setActiveRun] = useState<ScrapeRun | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
 
   useEffect(() => { loadSessions(); }, []);
 
@@ -46,38 +47,71 @@ export default function CompanyDetailPage() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // Poll active run for progress — only when running or paused
+  // Poll active run for progress — stable ref to avoid cascading intervals
+  const activeRunId = activeRun?.id;
+  const activeRunStatus = activeRun?.status;
+
   useEffect(() => {
-    if (!activeRun) return;
-    if (activeRun.status === 'completed' || activeRun.status === 'failed') return;
-    const interval = setInterval(async () => {
-      try {
-        const { data } = await getScrapeRun(activeRun.id);
-        const run = data.run as ScrapeRun;
-        setActiveRun(run);
-        if (run.status === 'completed' || run.status === 'failed') {
-          clearInterval(interval);
-          loadData();
+    if (!activeRunId) return;
+    if (activeRunStatus === 'completed' || activeRunStatus === 'failed') return;
+
+    let stopped = false;
+    const poll = async () => {
+      while (!stopped) {
+        await new Promise((r) => setTimeout(r, 10000));
+        if (stopped) break;
+        try {
+          const { data } = await getScrapeRun(activeRunId);
+          const run = data.run as ScrapeRun;
+          if (!stopped) setActiveRun(run);
+          if (run.status === 'completed' || run.status === 'failed') {
+            loadData();
+            break;
+          }
+        } catch {
+          if (!stopped) { setActiveRun(null); loadData(); }
+          break;
         }
-      } catch {
-        // Run not found (404) — stop polling
-        clearInterval(interval);
-        setActiveRun(null);
-        loadData();
       }
-    }, 15000);
-    return () => clearInterval(interval);
-  }, [activeRun?.id, activeRun?.status]);
+    };
+    poll();
+    return () => { stopped = true; };
+  }, [activeRunId]);
 
   const handleStart = async () => {
-    if (!id || selectedSessions.length === 0) return;
-    setError(null);
+    if (!id || selectedSessions.length === 0 || starting) return;
+    setStarting(true); setError(null);
     try {
       const { data } = await startScrape(id, selectedSessions);
       setActiveRun(data.run);
     } catch (e: any) {
       setError(e.response?.data?.detail || 'Failed to start scrape');
     }
+    setStarting(false);
+  };
+
+  const handleProfilesOnly = async () => {
+    if (!id || selectedSessions.length === 0 || starting) return;
+    setStarting(true); setError(null);
+    try {
+      const { data } = await startProfileScrape(id, selectedSessions);
+      setActiveRun(data.run);
+    } catch (e: any) {
+      setError(e.response?.data?.detail || 'Failed to start profile scrape');
+    }
+    setStarting(false);
+  };
+
+  const handleCompaniesOnly = async () => {
+    if (!id || selectedSessions.length === 0 || starting) return;
+    setStarting(true); setError(null);
+    try {
+      const { data } = await startCompanyScrape(id, selectedSessions);
+      setActiveRun(data.run);
+    } catch (e: any) {
+      setError(e.response?.data?.detail || 'Failed to start company scrape');
+    }
+    setStarting(false);
   };
 
   const handlePause = async () => {
@@ -151,9 +185,17 @@ export default function CompanyDetailPage() {
         {/* Action buttons */}
         <div className="flex items-center gap-3">
           {(!activeRun || activeRun.status === 'completed' || activeRun.status === 'failed') && (
-            <button onClick={handleStart} disabled={selectedSessions.length === 0} className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2">
-              <Play size={14} /> Start Scraping
-            </button>
+            <>
+              <button onClick={handleStart} disabled={selectedSessions.length === 0 || starting} className="px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2">
+                {starting ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />} Full Scrape
+              </button>
+              <button onClick={handleProfilesOnly} disabled={selectedSessions.length === 0 || starting} className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2">
+                {starting ? <Loader2 size={14} className="animate-spin" /> : <UserCheck size={14} />} Scrape Profiles
+              </button>
+              <button onClick={handleCompaniesOnly} disabled={selectedSessions.length === 0 || starting} className="px-4 py-2 bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-sm rounded-lg flex items-center gap-2">
+                {starting ? <Loader2 size={14} className="animate-spin" /> : <Building2 size={14} />} Scrape Companies
+              </button>
+            </>
           )}
           {activeRun?.status === 'running' && (
             <button onClick={handlePause} className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white text-sm rounded-lg flex items-center gap-2">

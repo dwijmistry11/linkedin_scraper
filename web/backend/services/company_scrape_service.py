@@ -18,7 +18,7 @@ from .twenty_crud import TwentyCRUD
 logger = logging.getLogger(__name__)
 
 SEVEN_DAYS = timedelta(days=7)
-BATCH_SIZE = 5  # Process 5 posts at a time
+BATCH_SIZE = 1  # Process 1 post at a time: scrape post → extract users → scrape profiles → next post
 PROFILE_BATCH_SIZE = 3  # Scrape 3 profiles then take a break
 
 
@@ -60,7 +60,7 @@ async def run_company_scrape(
                 pass
 
         start_phase = resume.get("phase", "company_info")
-        await crud.update_scrape_run(run_crm_id, {"status": "running"})
+        await _update_run(crud, run_crm_id, {"status": "running"})
 
         # ── Phase 1: Company Info ─────────────────────────────────
         if start_phase == "company_info":
@@ -157,11 +157,11 @@ async def run_company_scrape(
 
                     await crud.update_post(ep["id"], {"lastScrapedAt": datetime.now(timezone.utc).isoformat()})
                     all_processed_urns.add(urn)
-                    await crud.update_scrape_run(run_crm_id, {
+                    await _update_run(crud, run_crm_id, {
                         "postsProcessed": len(all_processed_urns), "totalUsersFound": total_new_users,
                         "newUsersFound": total_new_users,
                     })
-                    delay = random.uniform(5.0, 12.0)
+                    delay = random.uniform(20.0, 40.0)
                     await _progress(crud, run_crm_id, ws_callback, 10,
                                     f"Pending post {i+1}/{len(pending_posts_from_crm)} done. Waiting {int(delay)}s...",
                                     "extracting_users")
@@ -221,7 +221,7 @@ async def run_company_scrape(
                 await _progress(crud, run_crm_id, ws_callback, 12,
                                 f"Batch {batch_number}: Found {len(new_posts)} new posts (total: {total_posts_found}). Saving...",
                                 "scraping_posts")
-                await crud.update_scrape_run(run_crm_id, {"totalPostsFound": total_posts_found})
+                await _update_run(crud, run_crm_id, {"totalPostsFound": total_posts_found})
 
                 # Save posts to CRM and determine which need user extraction
                 now = datetime.now(timezone.utc)
@@ -306,7 +306,7 @@ async def run_company_scrape(
                         if post_record:
                             await crud.update_post(post_record["id"], {"lastScrapedAt": datetime.now(timezone.utc).isoformat()})
 
-                        await crud.update_scrape_run(run_crm_id, {
+                        await _update_run(crud, run_crm_id, {
                             "postsProcessed": len(all_processed_urns),
                             "totalUsersFound": total_new_users,
                             "newUsersFound": total_new_users,
@@ -321,7 +321,7 @@ async def run_company_scrape(
                         })
 
                         # Human delay
-                        delay = random.uniform(5.0, 12.0)
+                        delay = random.uniform(20.0, 40.0)
                         await _progress(crud, run_crm_id, ws_callback, 25,
                                         f"Post done ({total_new_users} new users total). Waiting {int(delay)}s...",
                                         "extracting_users")
@@ -333,11 +333,11 @@ async def run_company_scrape(
                     crud, run_crm_id, ws_callback, rotator, company_url, batch_number
                 )
                 total_profiles_scraped = resume.get("total_profiles_scraped", 0) + batch_profiles
-                await crud.update_scrape_run(run_crm_id, {"profilesScraped": total_profiles_scraped})
+                await _update_run(crud, run_crm_id, {"profilesScraped": total_profiles_scraped})
 
                 # Break between batches
                 if keep_going:
-                    pause = random.randint(10, 20)
+                    pause = random.randint(30, 60)
                     await _progress(crud, run_crm_id, ws_callback, 30,
                                     f"Batch {batch_number} complete ({total_new_users} users, {total_profiles_scraped} profiles). "
                                     f"Taking {pause}s break...",
@@ -348,20 +348,92 @@ async def run_company_scrape(
                             f"All done: {total_posts_found} posts, {total_new_users} new users, {total_profiles_scraped} profiles",
                             "scraping_profiles")
 
+        # ── Standalone Company Scraping ────────────────────────────
+        if start_phase == "scraping_companies":
+            await _progress(crud, run_crm_id, ws_callback, 5,
+                            "Fetching all companies from CRM that need scraping...", "scraping_companies")
+
+            all_companies = await crud.list_companies(limit=500)
+            companies_to_scrape = []
+            for c in all_companies:
+                lu = c.get("linkedinUrl")
+                comp_url = lu.get("primaryLinkUrl", "") if isinstance(lu, dict) else (lu or "")
+                if not comp_url or "/company/" not in comp_url and "/showcase/" not in comp_url:
+                    continue
+                # Skip if already has industry/about (already scraped)
+                if c.get("industry") or c.get("aboutUs"):
+                    continue
+                companies_to_scrape.append({"crm_id": c["id"], "url": comp_url, "name": c.get("name", "")})
+
+            total = len(companies_to_scrape)
+            skipped = len(all_companies) - total
+            await _progress(crud, run_crm_id, ws_callback, 10,
+                            f"{total} companies to scrape ({skipped} already have details)", "scraping_companies")
+
+            for j, comp in enumerate(companies_to_scrape):
+                if await _is_paused(crud, run_crm_id):
+                    await _save_checkpoint(crud, run_crm_id, ws_callback, "scraping_companies", {
+                        "current_company_index": j,
+                    })
+                    return
+
+                pct = 10 + int((j / max(total, 1)) * 85)
+                await _progress(crud, run_crm_id, ws_callback, pct,
+                                f"Company {j + 1}/{total}: {comp['name']}...", "scraping_companies")
+
+                page = rotator.get_page()
+                try:
+                    comp_scraper = CompanyScraper(page)
+                    comp_data = await comp_scraper.scrape(comp["url"])
+                    mapped = TwentyCRUD.map_company_from_scraper(comp_data)
+                    await crud.update_company(comp["crm_id"], mapped)
+                    await _progress(crud, run_crm_id, ws_callback, pct,
+                                    f"Company {j + 1}/{total}: {comp_data.name} — {comp_data.industry or 'saved'}",
+                                    "scraping_companies")
+                except Exception as e:
+                    await _progress(crud, run_crm_id, ws_callback, pct,
+                                    f"Company {j + 1}/{total}: {comp['name']} failed ({e})", "scraping_companies")
+
+                delay = random.uniform(30.0, 60.0)
+                await _progress(crud, run_crm_id, ws_callback, pct,
+                                f"Company {j + 1}/{total} done. Waiting {int(delay)}s...", "scraping_companies")
+                await asyncio.sleep(delay)
+
+            await _progress(crud, run_crm_id, ws_callback, 95,
+                            f"Company scraping complete: {total} companies processed", "scraping_companies")
+
+        # ── Standalone Profile Scraping (when jumping directly) ──
+        if start_phase == "scraping_profiles":
+            await _progress(crud, run_crm_id, ws_callback, 10,
+                            "Profile-only mode: scraping unscraped user profiles...", "scraping_profiles")
+            profiles_done = await _scrape_batch_profiles(crud, run_crm_id, ws_callback, rotator, company_url, 0)
+            await _progress(crud, run_crm_id, ws_callback, 95,
+                            f"Profile scraping complete: {profiles_done} profiles scraped", "scraping_profiles")
+
         # ── Done ──────────────────────────────────────────────────
-        await crud.update_scrape_run(run_crm_id, {
+        from ..routers.companies import _run_cache
+        await _update_run(crud, run_crm_id, {
             "status": "completed",
             "phase": "done",
             "progressPercent": 100,
             "progressMessage": "All done!",
             "resumeStateJson": "",
         })
-        await _progress(crud, run_crm_id, ws_callback, 100, "Scraping complete!", "done")
+        _run_cache[run_crm_id] = {**_run_cache.get(run_crm_id, {}), "id": run_crm_id, "status": "completed", "phase": "done", "progressPercent": 100, "progressMessage": "All done!"}
         logger.info("Company scrape completed: %s", company_url)
 
     except Exception as e:
         logger.exception("Company scrape failed: %s", company_url)
         await _fail_run(crud, run_crm_id, ws_callback, str(e))
+
+
+# ── CRM update with cache ─────────────────────────────────────────
+
+async def _update_run(crud: TwentyCRUD, run_id: str, data: dict):
+    """Update run in CRM and in-memory cache."""
+    from ..routers.companies import _run_cache
+    _run_cache[run_id] = {**_run_cache.get(run_id, {}), "id": run_id, **data}
+    await crud.update_scrape_run(run_id, data)
 
 
 # ── User upsert helper ────────────────────────────────────────────
@@ -514,13 +586,13 @@ async def _scrape_batch_profiles(
                             f"Batch {batch_number}, profile {j + 1}/{total}: failed ({e})", "scraping_profiles")
 
         # Human delay
-        delay = random.uniform(8.0, 18.0)
+        delay = random.uniform(30.0, 60.0)
         await _progress(crud, run_crm_id, ws_callback, 28,
                         f"Profile {j + 1}/{total} done. Waiting {int(delay)}s...", "scraping_profiles")
         await asyncio.sleep(delay)
 
         if (j + 1) % PROFILE_BATCH_SIZE == 0 and j + 1 < total:
-            pause = random.randint(20, 45)
+            pause = random.randint(60, 120)
             await _progress(crud, run_crm_id, ws_callback, 28,
                             f"Break after {j + 1} profiles ({pause}s)...", "scraping_profiles")
             await asyncio.sleep(pause)
@@ -533,11 +605,28 @@ async def _scrape_batch_profiles(
 # ── Helpers ───────────────────────────────────────────────────────
 
 async def _progress(crud: TwentyCRUD, run_id: str, ws_callback, pct: int, msg: str, phase: str):
-    await crud.update_scrape_run(run_id, {
+    # Update in-memory cache (for poll endpoint — no CRM API call needed)
+    from ..routers.companies import _run_cache
+    _run_cache[run_id] = {
+        **_run_cache.get(run_id, {}),
+        "id": run_id,
         "progressPercent": pct,
         "progressMessage": msg,
         "phase": phase,
-    })
+        "status": "running",
+    }
+    # Update CRM less frequently — only every 5% change or phase change
+    cached = _run_cache.get(run_id, {})
+    last_crm_pct = cached.get("_last_crm_pct", -10)
+    last_crm_phase = cached.get("_last_crm_phase", "")
+    if abs(pct - last_crm_pct) >= 5 or phase != last_crm_phase:
+        await crud.update_scrape_run(run_id, {
+            "progressPercent": pct,
+            "progressMessage": msg,
+            "phase": phase,
+        })
+        _run_cache[run_id]["_last_crm_pct"] = pct
+        _run_cache[run_id]["_last_crm_phase"] = phase
     if ws_callback:
         try:
             await ws_callback.on_progress(msg, pct)
@@ -551,12 +640,14 @@ async def _is_paused(crud: TwentyCRUD, run_crm_id: str) -> bool:
 
 
 async def _save_checkpoint(crud: TwentyCRUD, run_crm_id: str, ws_callback, phase: str, state: dict):
+    from ..routers.companies import _run_cache
     state["phase"] = phase
-    await crud.update_scrape_run(run_crm_id, {
+    await _update_run(crud, run_crm_id, {
         "status": "paused",
         "resumeStateJson": json.dumps(state),
         "progressMessage": f"Paused at {phase}",
     })
+    _run_cache[run_crm_id] = {**_run_cache.get(run_crm_id, {}), "id": run_crm_id, "status": "paused", "progressMessage": f"Paused at {phase}"}
     if ws_callback:
         try:
             await ws_callback.on_progress(f"Paused at {phase}", -1)
@@ -565,11 +656,13 @@ async def _save_checkpoint(crud: TwentyCRUD, run_crm_id: str, ws_callback, phase
 
 
 async def _fail_run(crud: TwentyCRUD, run_crm_id: str, ws_callback, error: str):
-    await crud.update_scrape_run(run_crm_id, {
+    from ..routers.companies import _run_cache
+    await _update_run(crud, run_crm_id, {
         "status": "failed",
         "errorMessage": error[:500],
         "progressMessage": f"Failed: {error[:200]}",
     })
+    _run_cache[run_crm_id] = {**_run_cache.get(run_crm_id, {}), "id": run_crm_id, "status": "failed", "errorMessage": error[:500], "progressMessage": f"Failed: {error[:200]}"}
     if ws_callback:
         try:
             await ws_callback.on_error(Exception(error))

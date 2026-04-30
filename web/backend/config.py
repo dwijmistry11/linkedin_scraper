@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     browser_slow_mo: int = 0
     cors_origins: list[str] = ["http://localhost:5173"]
     max_concurrent_sessions: int = 3
+    use_tor: bool = True  # Auto-detect: routes through Tor if running on port 9050
 
     # Twenty CRM integration
     twenty_crm_url: str = ""

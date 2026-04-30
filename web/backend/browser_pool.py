@@ -2,12 +2,27 @@
 
 import asyncio
 import logging
+import subprocess
 from pathlib import Path
 from typing import Optional
 
 from linkedin_scraper import BrowserManager
 
 logger = logging.getLogger(__name__)
+
+# Tor SOCKS5 proxy default
+TOR_PROXY = "socks5://127.0.0.1:9050"
+
+
+def _is_tor_running() -> bool:
+    """Check if Tor is running on the default SOCKS5 port."""
+    import socket
+    try:
+        s = socket.create_connection(("127.0.0.1", 9050), timeout=2)
+        s.close()
+        return True
+    except (ConnectionRefusedError, OSError):
+        return False
 
 
 class BrowserPool:
@@ -16,6 +31,9 @@ class BrowserPool:
     Each LinkedIn session gets its own Chromium browser so cookies/context
     stay isolated.  A per-session asyncio.Lock ensures that only one
     scraping operation uses a given browser page at a time.
+
+    If Tor is running on port 9050, browsers are routed through it
+    for IP rotation.
     """
 
     def __init__(
@@ -24,11 +42,13 @@ class BrowserPool:
         headless: bool = False,
         slow_mo: int = 0,
         max_sessions: int = 3,
+        use_tor: bool = False,
     ):
         self.sessions_dir = sessions_dir
         self.headless = headless
         self.slow_mo = slow_mo
         self.max_sessions = max_sessions
+        self.use_tor = use_tor
 
         self._browsers: dict[str, BrowserManager] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -43,7 +63,20 @@ class BrowserPool:
                     f"Maximum concurrent sessions ({self.max_sessions}) reached. "
                     "Close an existing session first."
                 )
-            browser = BrowserManager(headless=self.headless, slow_mo=self.slow_mo)
+
+            launch_opts = {}
+            if self.use_tor:
+                if _is_tor_running():
+                    launch_opts["proxy"] = {"server": TOR_PROXY}
+                    logger.info("Tor detected — routing session %s through %s", session_id, TOR_PROXY)
+                else:
+                    logger.info("Tor not running — using direct connection for session %s", session_id)
+
+            browser = BrowserManager(
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+                **launch_opts,
+            )
             await browser.start()
             session_path = Path(session_file)
             if session_path.exists():
@@ -85,6 +118,24 @@ class BrowserPool:
             logger.warning("Failed to navigate to LinkedIn for auth check: %s", e)
             return False
         return await is_logged_in(page)
+
+    @staticmethod
+    async def renew_tor_circuit() -> bool:
+        """Request a new Tor circuit (new IP). Requires Tor ControlPort enabled."""
+        try:
+            import socket
+            s = socket.create_connection(("127.0.0.1", 9051), timeout=5)
+            s.sendall(b'AUTHENTICATE ""\r\nSIGNAL NEWNYM\r\n')
+            resp = s.recv(256).decode()
+            s.close()
+            if "250" in resp:
+                logger.info("Tor circuit renewed — new IP")
+                return True
+            logger.warning("Tor circuit renewal response: %s", resp)
+            return False
+        except Exception as e:
+            logger.warning("Tor circuit renewal failed: %s", e)
+            return False
 
     @property
     def active_count(self) -> int:
