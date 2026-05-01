@@ -397,6 +397,55 @@ except ProfileNotFoundError:
 
 5. **Respect LinkedIn** - Don't scrape aggressively, respect rate limits
 
+## Web UI
+
+A full web interface for managing scraping operations, built with FastAPI + React.
+
+### Setup
+
+```bash
+# From repo root — install scraper package
+pip install -e .
+playwright install chromium
+
+# Backend dependencies
+cd web
+pip install -r requirements.txt
+
+# Frontend dependencies
+cd frontend
+npm install
+```
+
+### Start the servers
+
+```bash
+# Terminal 1: Backend (from web/)
+cd web
+uvicorn backend.main:app --reload --port 8000
+
+# Terminal 2: Frontend (from web/frontend/)
+cd web/frontend
+npm run dev
+```
+
+Open http://localhost:5173
+
+### Tor (optional)
+
+Tor routes traffic through rotating IPs to avoid LinkedIn rate limiting. The scraper auto-detects it — if Tor is running, traffic routes through it automatically.
+
+```bash
+# macOS
+brew install tor
+brew services start tor
+
+# Verify
+curl --socks5 127.0.0.1:9050 https://api.ipify.org
+```
+
+See [web/README.md](web/README.md) for full web UI documentation including API endpoints, configuration, and architecture.
+
 ## Requirements
 
 - Python 3.8+
