@@ -104,6 +104,7 @@ class TwentyCRUD:
                 logger.warning("Rate limited on update %s. Waiting %ds...", endpoint, _RATE_LIMIT_RETRY_WAIT)
                 await asyncio.sleep(_RATE_LIMIT_RETRY_WAIT)
                 continue
+            logger.warning("Update %s/%s failed: %s %s", endpoint, record_id[:8], resp.status_code, resp.text[:300])
             return False
         return False
 
@@ -295,9 +296,9 @@ class TwentyCRUD:
         if person.linkedin_url:
             data["linkedinUrl"] = {"primaryLinkLabel": "LinkedIn", "primaryLinkUrl": person.linkedin_url}
 
-        # About
+        # About (RICH_TEXT requires markdown format)
         if person.about:
-            data["intro"] = person.about
+            data["intro"] = {"markdown": person.about}
         data["openToWork"] = person.open_to_work
 
         # Full experience/education JSON
@@ -306,7 +307,7 @@ class TwentyCRUD:
         if person.educations:
             data["educationsJson"] = [e.model_dump() for e in person.educations]
 
-        data["profileScrapedAt"] = datetime.now(timezone.utc).isoformat()
+        data["profileScrapedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         return data
 
@@ -345,7 +346,7 @@ class TwentyCRUD:
         if company.founded:
             data["founded"] = company.founded
         if company.about_us:
-            data["aboutUs"] = company.about_us
+            data["aboutUs"] = {"markdown": company.about_us}
         if company.specialties:
             data["specialties"] = company.specialties
         if company.company_type:

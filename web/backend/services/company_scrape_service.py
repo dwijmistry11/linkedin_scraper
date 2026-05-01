@@ -80,7 +80,7 @@ async def run_company_scrape(
                     await _progress(crud, run_crm_id, ws_callback, 4,
                                     f"Scraped: {company_data.name or 'company'}. Saving to CRM...", "company_info")
                     mapped = TwentyCRUD.map_company_from_scraper(company_data)
-                    mapped["lastPostScrapedAt"] = datetime.now(timezone.utc).isoformat()
+                    mapped["lastPostScrapedAt"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
                     await crud.update_company(company_crm_id, mapped)
                     await _progress(crud, run_crm_id, ws_callback, 5,
                                     f"Company info saved: {company_data.name}", "company_info")
@@ -155,7 +155,7 @@ async def run_company_scrape(
                     except Exception as e:
                         logger.warning("Failed extracting users from pending post %s: %s", urn, e)
 
-                    await crud.update_post(ep["id"], {"lastScrapedAt": datetime.now(timezone.utc).isoformat()})
+                    await crud.update_post(ep["id"], {"lastScrapedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
                     all_processed_urns.add(urn)
                     await _update_run(crud, run_crm_id, {
                         "postsProcessed": len(all_processed_urns), "totalUsersFound": total_new_users,
@@ -304,7 +304,7 @@ async def run_company_scrape(
                         # Update post lastScrapedAt
                         post_record = await crud.find_post_by_urn(post.urn)
                         if post_record:
-                            await crud.update_post(post_record["id"], {"lastScrapedAt": datetime.now(timezone.utc).isoformat()})
+                            await crud.update_post(post_record["id"], {"lastScrapedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
 
                         await _update_run(crud, run_crm_id, {
                             "postsProcessed": len(all_processed_urns),
@@ -540,7 +540,12 @@ async def _scrape_batch_profiles(
             person = await person_scraper.scrape(user_info["profile_url"])
             mapped = TwentyCRUD.map_person_from_scraper(person)
             mapped["discoveredFromCompany"] = company_url
-            await crud.update_person(user_info["crm_id"], mapped)
+            logger.info("Saving profile %s: name=%s, jobTitle=%s, city=%s, url=%s",
+                        user_info["crm_id"][:8], mapped.get("name"), mapped.get("jobTitle"),
+                        mapped.get("city"), mapped.get("linkedinUrl", {}).get("primaryLinkUrl", "?") if isinstance(mapped.get("linkedinUrl"), dict) else "?")
+            success = await crud.update_person(user_info["crm_id"], mapped)
+            if not success:
+                logger.warning("CRM update_person returned False for %s", user_info["crm_id"][:8])
             scraped += 1
 
             # Extract current company, create if needed, scrape info, link

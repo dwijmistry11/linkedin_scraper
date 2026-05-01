@@ -43,29 +43,17 @@ class PersonScraper(BaseScraper):
         await self.callback.on_start("person", linkedin_url)
 
         try:
-            # Check if we're already on this profile page (e.g. from a previous step)
-            current_url = self.page.url
-            already_on_page = "/in/" in current_url and any(
-                part in linkedin_url for part in current_url.split("/") if len(part) > 5
-            )
-
-            if not already_on_page:
-                try:
-                    await self.navigate_and_wait(linkedin_url)
-                except Exception as nav_err:
-                    # Navigation failed — check if page has profile content anyway
-                    logger.warning("Navigation failed (%s), checking if page has content...", nav_err)
-                    has_content = await self.page.locator("h1").count() > 0
-                    if not has_content:
-                        raise  # No content on page, re-raise
+            # Always navigate to the profile URL
+            try:
+                await self.navigate_and_wait(linkedin_url)
+            except Exception as nav_err:
+                # Navigation failed — check if page has profile content anyway
+                logger.warning("Navigation failed (%s), checking if page has content...", nav_err)
+                title = await self.page.title()
+                if "LinkedIn" not in (title or ""):
+                    raise
 
             await self.callback.on_progress("On profile page", 10)
-
-            # Check if logged in (skip if page already has content)
-            try:
-                await self.ensure_logged_in()
-            except Exception:
-                pass  # May fail on rate-limited pages but content could still be there
 
             # Wait for main content
             try:
